@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"pkg.blksails.net/store"
+	"pkg.blksails.net/x/store"
 )
 
 // 测试 LRUStore

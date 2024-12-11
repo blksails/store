@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	gstore "pkg.blksails.net/store"
+	gstore "pkg.blksails.net/x/store"
 )
 
 // 测试模型

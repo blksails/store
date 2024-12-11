@@ -5,7 +5,7 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"pkg.blksails.net/store"
+	"pkg.blksails.net/x/store"
 )
 
 // QueryOption 是查询选项函数

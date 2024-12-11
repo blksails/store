@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"pkg.blksails.net/store"
+	"pkg.blksails.net/x/store"
 )
 
 // RedisStore 是基于 Redis 的存储实现

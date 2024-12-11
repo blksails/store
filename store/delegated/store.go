@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"pkg.blksails.net/store"
+	"pkg.blksails.net/x/store"
 )
 
 // Layer 表示存储层配置

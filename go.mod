@@ -1,4 +1,4 @@
-module pkg.blksails.net/store
+module pkg.blksails.net/x/store
 
 go 1.23.3
 

@@ -9,7 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	gstore "pkg.blksails.net/store"
+	gstore "pkg.blksails.net/x/store"
 )
 
 func setupTestRedis(t *testing.T) *redis.Client {

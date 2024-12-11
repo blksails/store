@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	lru "github.com/hashicorp/golang-lru/v2"
-	"pkg.blksails.net/store"
+	"pkg.blksails.net/x/store"
 )
 
 // LRUStore 是基于 LRU 缓存的存储实现

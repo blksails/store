@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	gstore "pkg.blksails.net/store"
+	gstore "pkg.blksails.net/x/store"
 )
 
 // mockStore 是用于测试的内存存储实现

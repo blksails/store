@@ -6,7 +6,7 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
-	"pkg.blksails.net/store"
+	"pkg.blksails.net/x/store"
 )
 
 // ExpirableStore 是基于 LRU 的可过期存储实现
