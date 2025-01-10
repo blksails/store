@@ -81,12 +81,32 @@ func TestLRUStore(t *testing.T) {
 		keys := lruStore.Keys(ctx)
 		assert.ElementsMatch(t, []string{"key1", "key2"}, keys)
 	})
+
+	t.Run("GetSet", func(t *testing.T) {
+		// Test when key doesn't exist
+		oldValue, err := lruStore.GetSet(ctx, "newkey", "newvalue")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		assert.Empty(t, oldValue)
+
+		value, err := lruStore.Get(ctx, "newkey")
+		require.NoError(t, err)
+		assert.Equal(t, "newvalue", value)
+
+		// Test when key exists
+		oldValue, err = lruStore.GetSet(ctx, "newkey", "updatedvalue")
+		require.NoError(t, err)
+		assert.Equal(t, "newvalue", oldValue)
+
+		value, err = lruStore.Get(ctx, "newkey")
+		require.NoError(t, err)
+		assert.Equal(t, "updatedvalue", value)
+	})
 }
 
 // 测试 ExpirableStore
 func TestExpirableStore(t *testing.T) {
 	ctx := context.Background()
-	expStore, err := NewExpirableStore[string, string](100, time.Second)
+	expStore, err := NewExpirableStore[string, string](100, time.Second, nil)
 	require.NoError(t, err)
 
 	t.Run("Basic CRUD", func(t *testing.T) {
@@ -109,7 +129,7 @@ func TestExpirableStore(t *testing.T) {
 	})
 
 	t.Run("Expiration", func(t *testing.T) {
-		shortStore, err := NewExpirableStore[string, string](100, 100*time.Millisecond)
+		shortStore, err := NewExpirableStore[string, string](100, 100*time.Millisecond, nil)
 		require.NoError(t, err)
 
 		err = shortStore.Set(ctx, "key1", "value1")
@@ -149,6 +169,43 @@ func TestExpirableStore(t *testing.T) {
 		keys := expStore.Keys(ctx)
 		assert.ElementsMatch(t, []string{"key1", "key2"}, keys)
 	})
+
+	t.Run("GetSet", func(t *testing.T) {
+		// Test when key doesn't exist
+		oldValue, err := expStore.GetSet(ctx, "newkey", "newvalue")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		assert.Empty(t, oldValue)
+
+		value, err := expStore.Get(ctx, "newkey")
+		require.NoError(t, err)
+		assert.Equal(t, "newvalue", value)
+
+		// Test when key exists
+		oldValue, err = expStore.GetSet(ctx, "newkey", "updatedvalue")
+		require.NoError(t, err)
+		assert.Equal(t, "newvalue", oldValue)
+
+		value, err = expStore.Get(ctx, "newkey")
+		require.NoError(t, err)
+		assert.Equal(t, "updatedvalue", value)
+	})
+
+	t.Run("GetSet with Expiration", func(t *testing.T) {
+		shortStore, err := NewExpirableStore[string, string](100, 100*time.Millisecond, nil)
+		require.NoError(t, err)
+
+		oldValue, err := shortStore.GetSet(ctx, "expkey", "expvalue")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		assert.Empty(t, oldValue)
+
+		// Wait for expiration
+		time.Sleep(200 * time.Millisecond)
+
+		// Key should be expired
+		oldValue, err = shortStore.GetSet(ctx, "expkey", "newvalue")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		assert.Empty(t, oldValue)
+	})
 }
 
 // 并发测试
@@ -160,7 +217,7 @@ func TestConcurrency(t *testing.T) {
 	})
 
 	t.Run("ExpirableStore", func(t *testing.T) {
-		store, err := NewExpirableStore[string, string](1000, time.Minute)
+		store, err := NewExpirableStore[string, string](1000, time.Minute, nil)
 		require.NoError(t, err)
 		testConcurrentAccess(t, store)
 	})
@@ -204,7 +261,7 @@ func BenchmarkStores(b *testing.B) {
 	})
 
 	b.Run("ExpirableStore", func(b *testing.B) {
-		store, _ := NewExpirableStore[string, string](10000, time.Minute)
+		store, _ := NewExpirableStore[string, string](10000, time.Minute, nil)
 		benchmarkStore(b, ctx, store)
 	})
 }
@@ -270,7 +327,7 @@ func FuzzExpirableStore(f *testing.F) {
 	f.Add("key", "value")
 	f.Fuzz(func(t *testing.T, key, value string) {
 		ctx := context.Background()
-		store, err := NewExpirableStore[string, string](100, time.Minute)
+		store, err := NewExpirableStore[string, string](100, time.Minute, nil)
 		if err != nil {
 			t.Skip()
 		}

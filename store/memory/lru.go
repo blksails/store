@@ -72,3 +72,21 @@ func (s *LRUStore[K, V]) Keys(_ context.Context) []K {
 	defer s.mu.RUnlock()
 	return s.cache.Keys()
 }
+
+// GetSet 获取旧值并设置新值
+func (s *LRUStore[K, V]) GetSet(_ context.Context, key K, value V) (V, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var oldValue V
+	var err error
+
+	if old, ok := s.cache.Get(key); ok {
+		oldValue = old
+	} else {
+		err = store.ErrNotFound
+	}
+
+	s.cache.Add(key, value)
+	return oldValue, err
+}

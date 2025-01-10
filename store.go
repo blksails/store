@@ -16,6 +16,10 @@ type Store[K comparable, V any] interface {
 	// 如果键不存在，返回零值和 ErrNotFound
 	Get(ctx context.Context, key K) (V, error)
 
+	// GetSet 获取旧值并设置新值
+	// 如果键不存在，oldValue 将是零值且 err 为 ErrNotFound，但仍会设置新值
+	GetSet(ctx context.Context, key K, value V) (oldValue V, err error)
+
 	// Delete 删除指定键的值
 	// 如果键不存在，返回 ErrNotFound
 	Delete(ctx context.Context, key K) error

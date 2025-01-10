@@ -149,3 +149,8 @@ func (s *DelegatedStore[K, V]) Keys(ctx context.Context) []K {
 
 	return keys
 }
+
+// GetLayer 获取指定索引的层
+func (s *DelegatedStore[K, V]) GetLayer(index int) Layer[K, V] {
+	return s.layers[index]
+}

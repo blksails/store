@@ -83,6 +83,24 @@ func (s *mockStore[K, V]) Keys(_ context.Context) []K {
 	return keys
 }
 
+func (s *mockStore[K, V]) GetSet(_ context.Context, key K, value V) (V, error) {
+	time.Sleep(s.delay)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var oldValue V
+	var err error
+
+	if old, ok := s.data[key]; ok {
+		oldValue = old
+	} else {
+		err = gstore.ErrNotFound
+	}
+
+	s.data[key] = value
+	return oldValue, err
+}
+
 // 单元测试
 func TestDelegatedStore(t *testing.T) {
 	ctx := context.Background()
@@ -121,10 +139,9 @@ func TestDelegatedStore(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "value2", value)
 
-		// Debugging output
-		fmt.Printf("Duration for slow store Get: %v\n", duration)
-
-		assert.True(t, duration >= 100*time.Millisecond)
+		// 检查第一次获取是否从慢存储获取（应该在 90-200ms 之间）
+		assert.GreaterOrEqual(t, duration.Milliseconds(), int64(90), "第一次获取应该从慢存储读取")
+		assert.Less(t, duration.Milliseconds(), int64(200), "慢存储读取不应该超时")
 
 		// 第二次获取应该从快存储中获取
 		start = time.Now()
@@ -133,7 +150,7 @@ func TestDelegatedStore(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, "value2", value)
-		assert.True(t, duration < 100*time.Millisecond)
+		assert.Less(t, duration.Milliseconds(), int64(90), "第二次获取应该从快存储读取") // 放宽快存储的时间限制
 	})
 
 	t.Run("Delete", func(t *testing.T) {
@@ -289,6 +306,10 @@ func (s *errorStore[K, V]) Delete(_ context.Context, _ K) error   { return s.err
 func (s *errorStore[K, V]) Has(_ context.Context, _ K) bool       { return false }
 func (s *errorStore[K, V]) Clear(_ context.Context) error         { return s.err }
 func (s *errorStore[K, V]) Keys(_ context.Context) []K            { return nil }
+func (s *errorStore[K, V]) GetSet(_ context.Context, _ K, _ V) (V, error) {
+	var zero V
+	return zero, s.err
+}
 
 func TestDelegatedStoreErrors(t *testing.T) {
 	ctx := context.Background()

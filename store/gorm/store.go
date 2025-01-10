@@ -46,14 +46,17 @@ func (c CompositeKeyConverter[K]) ToDBKey(key K) interface{} {
 
 // GormStore 是基于 GORM 的存储实现
 type GormStore[K comparable, V any] struct {
-	db        *gorm.DB
-	keyConv   KeyConverter[K]
-	beforeGet []func(ctx context.Context, key K) error
-	afterGet  []func(ctx context.Context, key K, value V) error
-	beforeSet []func(ctx context.Context, key K, value V) error
-	afterSet  []func(ctx context.Context, key K, value V) error
-	beforeDel []func(ctx context.Context, key K) error
-	afterDel  []func(ctx context.Context, key K) error
+	db           *gorm.DB
+	keyConv      KeyConverter[K]
+	beforeGet    []func(ctx context.Context, key K) error
+	afterGet     []func(ctx context.Context, key K, value V) error
+	beforeSet    []func(ctx context.Context, key K, value V) error
+	afterSet     []func(ctx context.Context, key K, value V) error
+	beforeDel    []func(ctx context.Context, key K) error
+	afterDel     []func(ctx context.Context, key K) error
+	getScopes    []func(*gorm.DB) *gorm.DB
+	setScopes    []func(*gorm.DB) *gorm.DB
+	deleteScopes []func(*gorm.DB) *gorm.DB
 }
 
 // StoreOption 配置 GormStore 的选项
@@ -108,6 +111,27 @@ func WithKeyConverter[K comparable, V any](conv KeyConverter[K]) StoreOption[K, 
 	}
 }
 
+// WithGetScope 添加 Get 操作的查询范围
+func WithGetScope[K comparable, V any](scope func(*gorm.DB) *gorm.DB) StoreOption[K, V] {
+	return func(s *GormStore[K, V]) {
+		s.getScopes = append(s.getScopes, scope)
+	}
+}
+
+// WithSetScope 添加 Set 操作的查询范围
+func WithSetScope[K comparable, V any](scope func(*gorm.DB) *gorm.DB) StoreOption[K, V] {
+	return func(s *GormStore[K, V]) {
+		s.setScopes = append(s.setScopes, scope)
+	}
+}
+
+// WithDeleteScope 添加 Delete 操作的查询范围
+func WithDeleteScope[K comparable, V any](scope func(*gorm.DB) *gorm.DB) StoreOption[K, V] {
+	return func(s *GormStore[K, V]) {
+		s.deleteScopes = append(s.deleteScopes, scope)
+	}
+}
+
 // NewGormStore 创建一个新的 GORM 存储
 func NewGormStore[K comparable, V any](db *gorm.DB, opts ...StoreOption[K, V]) (*GormStore[K, V], error) {
 	store := &GormStore[K, V]{
@@ -142,7 +166,13 @@ func (s *GormStore[K, V]) Set(ctx context.Context, key K, value V) error {
 		}
 	}
 
-	err := s.db.WithContext(ctx).Save(&value).Error
+	query := s.db.WithContext(ctx)
+	// 应用 set scopes
+	for _, scope := range s.setScopes {
+		query = scope(query)
+	}
+
+	err := query.Save(&value).Error
 	if err != nil {
 		return err
 	}
@@ -174,6 +204,10 @@ func (s *GormStore[K, V]) GetWithOpts(ctx context.Context, key K, opts ...QueryO
 	}
 
 	query := s.db.WithContext(ctx)
+	// 应用 get scopes
+	for _, scope := range s.getScopes {
+		query = scope(query)
+	}
 	// 应用查询选项
 	for _, opt := range opts {
 		query = opt(query)
@@ -206,7 +240,13 @@ func (s *GormStore[K, V]) Delete(ctx context.Context, key K) error {
 		}
 	}
 
-	result := s.db.WithContext(ctx).Delete(new(V), s.keyConv.ToDBKey(key))
+	query := s.db.WithContext(ctx)
+	// 应用 delete scopes
+	for _, scope := range s.deleteScopes {
+		query = scope(query)
+	}
+
+	result := query.Delete(new(V), s.keyConv.ToDBKey(key))
 	if result.Error != nil {
 		return result.Error
 	}
@@ -254,6 +294,36 @@ func (s *GormStore[K, V]) Keys(ctx context.Context) []K {
 	var keys []K
 	s.db.WithContext(ctx).Model(new(V)).Pluck("id", &keys)
 	return keys
+}
+
+// SetGetBeforeHook 设置获取前置钩子
+func (s *GormStore[K, V]) SetGetBeforeHook(hook func(ctx context.Context, key K) error) {
+	s.beforeGet = append(s.beforeGet, hook)
+}
+
+// SetGetAfterHook 设置获取后置钩子
+func (s *GormStore[K, V]) SetGetAfterHook(hook func(ctx context.Context, key K, value V) error) {
+	s.afterGet = append(s.afterGet, hook)
+}
+
+// SetUpdateBeforeHook 设置更新前置钩子
+func (s *GormStore[K, V]) SetUpdateBeforeHook(hook func(ctx context.Context, key K, value V) error) {
+	s.beforeSet = append(s.beforeSet, hook)
+}
+
+// SetUpdateAfterHook 设置更新后置钩子
+func (s *GormStore[K, V]) SetUpdateAfterHook(hook func(ctx context.Context, key K, value V) error) {
+	s.afterSet = append(s.afterSet, hook)
+}
+
+// SetBeforeDeleteHook 设置删除前置钩子
+func (s *GormStore[K, V]) SetBeforeDeleteHook(hook func(ctx context.Context, key K) error) {
+	s.beforeDel = append(s.beforeDel, hook)
+}
+
+// SetAfterDeleteHook 设置删除后置钩子
+func (s *GormStore[K, V]) SetAfterDeleteHook(hook func(ctx context.Context, key K) error) {
+	s.afterDel = append(s.afterDel, hook)
 }
 
 // 一些常用的查询选项
