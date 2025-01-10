@@ -154,3 +154,39 @@ func (s *DelegatedStore[K, V]) Keys(ctx context.Context) []K {
 func (s *DelegatedStore[K, V]) GetLayer(index int) Layer[K, V] {
 	return s.layers[index]
 }
+
+// GetSet 获取旧值并设置新值
+func (s *DelegatedStore[K, V]) GetSet(ctx context.Context, key K, value V) (V, error) {
+	var oldValue V
+	var foundAt = -1
+	var lastErr error
+
+	// 按优先级顺序查找旧值
+	for i, layer := range s.layers {
+		val, err := layer.Store.Get(ctx, key)
+		if err == nil {
+			oldValue = val
+			foundAt = i
+			break
+		}
+		if err != store.ErrNotFound {
+			lastErr = err
+		}
+	}
+
+	// 设置新值
+	if err := s.Set(ctx, key, value); err != nil {
+		return oldValue, err
+	}
+
+	// 如果找到了旧值，返回它
+	if foundAt >= 0 {
+		return oldValue, nil
+	}
+
+	// 如果没找到旧值，返回适当的错误
+	if lastErr != nil {
+		return oldValue, lastErr
+	}
+	return oldValue, store.ErrNotFound
+}

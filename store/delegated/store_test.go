@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"pkg.blksails.net/x/store"
 	gstore "pkg.blksails.net/x/store"
 )
 
@@ -336,4 +337,112 @@ func TestDelegatedStoreErrors(t *testing.T) {
 		err := store.Delete(ctx, "key")
 		assert.ErrorIs(t, err, expectedErr)
 	})
+}
+
+func TestDelegatedStore_GetSet(t *testing.T) {
+	store1 := newMockStore[string, string](0)
+	store2 := newMockStore[string, string](0)
+
+	ds := NewDelegatedStore(
+		Layer[string, string]{
+			Store:   store1,
+			TTL:     time.Minute,
+			Primary: false,
+		},
+		Layer[string, string]{
+			Store:   store2,
+			Primary: true,
+		},
+	)
+
+	ctx := context.Background()
+
+	tests := []struct {
+		name       string
+		setup      func()
+		key        string
+		value      string
+		wantOld    string
+		wantErr    error
+		checkAfter func() bool
+	}{
+		{
+			name:    "set new value",
+			setup:   func() {},
+			key:     "key1",
+			value:   "new1",
+			wantOld: "",
+			wantErr: store.ErrNotFound,
+			checkAfter: func() bool {
+				// 验证新值已经写入两个层
+				v1, _ := store1.Get(ctx, "key1")
+				v2, _ := store2.Get(ctx, "key1")
+				return v1 == "new1" && v2 == "new1"
+			},
+		},
+		{
+			name: "update existing value",
+			setup: func() {
+				store2.Set(ctx, "key2", "old2")
+			},
+			key:     "key2",
+			value:   "new2",
+			wantOld: "old2",
+			wantErr: nil,
+			checkAfter: func() bool {
+				// 验证新值已经更新到两个层
+				v1, _ := store1.Get(ctx, "key2")
+				v2, _ := store2.Get(ctx, "key2")
+				return v1 == "new2" && v2 == "new2"
+			},
+		},
+		{
+			name: "value exists in first layer",
+			setup: func() {
+				store1.Set(ctx, "key3", "old3")
+			},
+			key:     "key3",
+			value:   "new3",
+			wantOld: "old3",
+			wantErr: nil,
+			checkAfter: func() bool {
+				// 验证新值已经更新到两个层
+				v1, _ := store1.Get(ctx, "key3")
+				v2, _ := store2.Get(ctx, "key3")
+				return v1 == "new3" && v2 == "new3"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 清理之前的数据
+			store1.Clear(ctx)
+			store2.Clear(ctx)
+
+			// 设置测试数据
+			tt.setup()
+
+			// 执行 GetSet
+			gotOld, err := ds.GetSet(ctx, tt.key, tt.value)
+
+			// 检查返回的旧值和错误
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Errorf("GetSet() error = %v, wantErr %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Errorf("GetSet() unexpected error = %v", err)
+			}
+
+			if gotOld != tt.wantOld {
+				t.Errorf("GetSet() gotOld = %v, want %v", gotOld, tt.wantOld)
+			}
+
+			// 检查后续状态
+			if !tt.checkAfter() {
+				t.Error("GetSet() failed post-condition check")
+			}
+		})
+	}
 }
