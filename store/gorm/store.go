@@ -391,3 +391,71 @@ var (
 	ForUpdate = clause.Locking{Strength: "UPDATE"}
 	ForShare  = clause.Locking{Strength: "SHARE"}
 )
+
+// GetSet 获取旧值并设置新值
+func (s *GormStore[K, V]) GetSet(ctx context.Context, key K, value V) (oldValue V, err error) {
+	// 开启事务
+	tx := s.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return oldValue, tx.Error
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 执行 Get 前置钩子
+	for _, hook := range s.beforeGet {
+		if err = hook(ctx, key); err != nil {
+			return
+		}
+	}
+
+	// 获取旧值，使用悲观锁
+	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		First(&oldValue, s.keyConv.ToDBKey(key)).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return oldValue, err
+	}
+
+	// 执行 Get 后置钩子
+	if err != gorm.ErrRecordNotFound {
+		for _, hook := range s.afterGet {
+			if err = hook(ctx, key, oldValue); err != nil {
+				return
+			}
+		}
+	}
+
+	// 执行 Set 前置钩子
+	for _, hook := range s.beforeSet {
+		if err = hook(ctx, key, value); err != nil {
+			return
+		}
+	}
+
+	// 保存新值
+	if err = tx.Save(&value).Error; err != nil {
+		return
+	}
+
+	// 执行 Set 后置钩子
+	for _, hook := range s.afterSet {
+		if err = hook(ctx, key, value); err != nil {
+			return
+		}
+	}
+
+	// 提交事务
+	if err = tx.Commit().Error; err != nil {
+		return
+	}
+
+	// 如果之前的值不存在，返回 ErrNotFound
+	if err == gorm.ErrRecordNotFound {
+		err = store.ErrNotFound
+	}
+
+	return
+}
