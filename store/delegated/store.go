@@ -15,7 +15,8 @@ type OperationFunc[K comparable, V any] func(ctx context.Context, key K, value V
 
 // BackFillCallback 定义 backfill 操作的回调函数类型
 // 参数：ctx 上下文, key 键, value 值, layerIndex 被 backfill 的层索引, isPrimary 是否为主存储层
-type BackFillCallback[K comparable, V any] func(ctx context.Context, key K, value V, layerIndex int, isPrimary bool)
+// 返回值：(newValue V, useReturnValue bool) - newValue 是要回填的新值，useReturnValue 表示是否使用返回值
+type BackFillCallback[K comparable, V any] func(ctx context.Context, key K, value V, layerIndex int, isPrimary bool) (V, bool)
 
 // DelegatedStoreOpt 定义 DelegatedStore 的选项函数类型
 type DelegatedStoreOpt[K comparable, V any] func(*DelegatedStore[K, V])
@@ -179,18 +180,30 @@ func (s *DelegatedStore[K, V]) Get(ctx context.Context, key K) (V, error) {
 func (s *DelegatedStore[K, V]) backfill(ctx context.Context, key K, value V, foundAt int) {
 	for i := 0; i < foundAt; i++ {
 		layer := s.layers[i]
+		backfillValue := value // 默认使用原始值
 
-		// 如果设置了回调函数，触发所有回调
+		// 如果设置了回调函数，触发所有回调（使用 panic 恢复机制）
 		for _, callback := range s.onBackFillFuncs {
-			callback(ctx, key, value, i, layer.Primary)
+			func(cb BackFillCallback[K, V]) {
+				defer func() {
+					if r := recover(); r != nil {
+						// 记录 panic 但不影响 backfill 过程
+						// 在生产环境中，这里应该使用适当的日志记录
+						// log.Printf("OnBackFill callback panic recovered: %v", r)
+					}
+				}()
+				if newValue, useReturnValue := cb(ctx, key, value, i, layer.Primary); useReturnValue {
+					backfillValue = newValue
+				}
+			}(callback)
 		}
 
 		if expirable, ok := layer.Store.(interface {
 			SetWithTTL(context.Context, K, V, time.Duration) error
 		}); ok && layer.TTL > 0 {
-			expirable.SetWithTTL(ctx, key, value, layer.TTL)
+			expirable.SetWithTTL(ctx, key, backfillValue, layer.TTL)
 		} else {
-			layer.Store.Set(ctx, key, value)
+			layer.Store.Set(ctx, key, backfillValue)
 		}
 	}
 }
@@ -352,24 +365,41 @@ func (s *DelegatedStore[K, V]) GetSet(ctx context.Context, key K, value V) (V, e
 //   - layerIndex: 被回填的层的索引（0 为最高优先级）
 //   - isPrimary: 被回填的层是否为主存储层
 //
+// 回调返回值说明：
+//   - newValue: 要回填的新值（如果 useReturnValue 为 true）
+//   - useReturnValue: 是否使用返回的新值进行回填，false 表示使用原始值
+//
 // 使用场景：
 //   - 监控缓存命中率和数据流动
 //   - 记录主存储层的回填事件（可能表明缓存失效）
 //   - 收集性能指标和访问模式
 //   - 触发相关数据的预热
+//   - 在回填时转换或修改数据值
 //
 // 使用示例：
 //
-//	// 添加监控回调
-//	ds.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+//	// 添加监控回调（不修改值）
+//	ds.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 //	    if isPrimary {
 //	        log.Printf("警告: 主存储层回填 key=%s layer=%d", key, layerIndex)
 //	    }
+//	    return value, false // 不修改原始值
+//	})
+//
+//	// 添加数据转换回调
+//	ds.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
+//	    // 在回填时对数据进行压缩或转换
+//	    if layerIndex == 0 && strings.HasPrefix(key, "cache:") {
+//	        compressedValue := compress(value)
+//	        return compressedValue, true // 使用压缩后的值
+//	    }
+//	    return value, false // 使用原始值
 //	})
 //
 //	// 添加指标收集回调
-//	ds.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+//	ds.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 //	    metrics.BackfillCounter.WithLabels("layer", fmt.Sprintf("%d", layerIndex)).Inc()
+//	    return value, false // 不修改值，仅收集指标
 //	})
 func (s *DelegatedStore[K, V]) OnBackFill(callback BackFillCallback[K, V]) {
 	s.onBackFillFuncs = append(s.onBackFillFuncs, callback)

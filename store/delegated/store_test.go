@@ -481,13 +481,14 @@ func TestOnBackFillCallback(t *testing.T) {
 	}
 
 	// 设置回调函数
-	ds.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+	ds.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 		callbackCalls = append(callbackCalls, struct {
 			key        string
 			value      string
 			layerIndex int
 			isPrimary  bool
 		}{key, value, layerIndex, isPrimary})
+		return "", false
 	})
 
 	t.Run("Primary Layer Backfill Callback", func(t *testing.T) {
@@ -634,18 +635,21 @@ func TestOnBackFillCallback(t *testing.T) {
 		var callback1Calls, callback2Calls, callback3Calls []string
 
 		// 添加第一个回调
-		dsMultiple.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		dsMultiple.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			callback1Calls = append(callback1Calls, fmt.Sprintf("cb1-%s-%d", key, layerIndex))
+			return "", false
 		})
 
 		// 添加第二个回调
-		dsMultiple.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		dsMultiple.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			callback2Calls = append(callback2Calls, fmt.Sprintf("cb2-%s-%d", key, layerIndex))
+			return "", false
 		})
 
 		// 添加第三个回调
-		dsMultiple.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		dsMultiple.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			callback3Calls = append(callback3Calls, fmt.Sprintf("cb3-%s-%d", key, layerIndex))
+			return "", false
 		})
 
 		// 在第二层设置值
@@ -687,8 +691,9 @@ func TestOnBackFillCallback(t *testing.T) {
 		var callbackCalls []string
 
 		// 添加回调
-		dsClear.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		dsClear.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			callbackCalls = append(callbackCalls, key)
+			return "", false
 		})
 
 		// 在第二层设置值
@@ -743,16 +748,19 @@ func TestOnBackFillCallback(t *testing.T) {
 		var executionOrder []string
 
 		// 按顺序添加回调
-		dsOrder.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		dsOrder.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			executionOrder = append(executionOrder, "first")
+			return "", false
 		})
 
-		dsOrder.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		dsOrder.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			executionOrder = append(executionOrder, "second")
+			return "", false
 		})
 
-		dsOrder.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		dsOrder.OnBackFill(func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			executionOrder = append(executionOrder, "third")
+			return "", false
 		})
 
 		// 在第二层设置值
@@ -800,9 +808,10 @@ func TestNewDelegatedStoreWithOptions(t *testing.T) {
 		var callbackCalled bool
 		var callbackKey string
 
-		callback := func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		callback := func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			callbackCalled = true
 			callbackKey = key
+			return "", true
 		}
 
 		ds := NewDelegatedStore(layers, WithBackFillCallback(callback))
@@ -826,12 +835,14 @@ func TestNewDelegatedStoreWithOptions(t *testing.T) {
 	t.Run("With Multiple BackFill Callbacks Option", func(t *testing.T) {
 		var callback1Called, callback2Called bool
 
-		callback1 := func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		callback1 := func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			callback1Called = true
+			return "", false
 		}
 
-		callback2 := func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		callback2 := func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			callback2Called = true
+			return "", false
 		}
 
 		ds := NewDelegatedStore(layers, WithBackFillCallbacks(callback1, callback2))
@@ -915,8 +926,9 @@ func TestNewDelegatedStoreWithOptions(t *testing.T) {
 		var callbackCalled bool
 		var logs []string
 
-		callback := func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) {
+		callback := func(ctx context.Context, key string, value string, layerIndex int, isPrimary bool) (string, bool) {
 			callbackCalled = true
+			return "", false
 		}
 
 		middleware := func(next OperationFunc[string, string]) OperationFunc[string, string] {

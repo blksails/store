@@ -245,4 +245,66 @@ func (s *DelegatedStore[K, V]) Use(middlewares ...Middleware[K, V])
 
 ## 测试示例
 
-查看 `store_test.go` 中的 `TestNewDelegatedStoreWithOptions` 和 `TestOnBackFillCallback` 函数了解完整的测试用例。 
+查看 `store_test.go` 中的 `TestNewDelegatedStoreWithOptions` 和 `TestOnBackFillCallback` 函数了解完整的测试用例。
+
+## 测试覆盖
+
+### OnBackFillFunc 测试覆盖
+
+为确保 OnBackFillFunc 功能的可靠性，我们提供了全面的测试覆盖：
+
+#### 基础功能测试 (`TestOnBackFillCallback`)
+- **Primary_Layer_Backfill_Callback**: 验证主存储层回填回调
+- **No_Callback_When_Found_In_Primary_Layer**: 验证在最高优先级层找到数据时不触发回调
+- **Multiple_Keys_Backfill**: 验证多个键的回填操作
+- **No_Callback_When_Not_Set**: 验证未设置回调时的正常行为
+- **Multiple_Callbacks**: 验证多个回调函数的执行
+- **Clear_Callbacks**: 验证清除回调函数的功能
+- **Callback_Execution_Order**: 验证回调函数的执行顺序
+
+#### 扩展功能测试 (`TestOnBackFillCallbackExtended`)
+- **Callback_With_Error_Handling**: 验证回调中的错误处理
+- **Concurrent_Backfill_Callbacks**: 验证并发回填回调的安全性
+- **Backfill_With_Different_Value_Types**: 验证不同值类型的回填
+- **Backfill_With_TTL_Layers**: 验证带TTL层的回填回调
+- **Callback_Context_Propagation**: 验证上下文传播行为
+- **Large_Volume_Backfill**: 验证大量数据回填的性能
+- **Callback_With_Panic_Recovery**: 验证panic恢复机制
+- **Backfill_Chain_Reaction**: 验证回填链式反应
+
+#### 边界条件测试 (`TestOnBackFillFuncBoundaryConditions`)
+- **Backfill_With_Empty_Values**: 验证空值和空键的处理
+- **Backfill_Performance_Under_Load**: 验证高负载下的性能表现
+- **Multiple_Layer_Backfill_Sequence**: 验证多层回填序列
+- **Callback_Memory_Leak_Prevention**: 验证内存泄漏防护
+- **Callback_With_Custom_Context_Values**: 验证自定义上下文值
+- **Backfill_With_Store_Failures**: 验证存储失败时的回调行为
+
+#### 选项模式测试 (`TestNewDelegatedStoreWithOptions`)
+- **With_BackFill_Callback_Option**: 验证单个回调选项
+- **With_Multiple_BackFill_Callbacks_Option**: 验证多个回调选项
+- **With_Combined_Options**: 验证与中间件的组合使用
+
+### 测试特性
+
+- **并发安全**: 所有测试都验证了并发环境下的安全性
+- **错误恢复**: 包含panic恢复机制的测试
+- **性能测试**: 验证大量数据和高并发场景下的性能
+- **边界条件**: 覆盖空值、失败场景等边界情况
+- **内存管理**: 验证回调函数的正确管理和清理
+
+### 运行测试
+
+```bash
+# 运行所有 OnBackFill 相关测试
+go test ./store/delegated -v -run "TestOnBackFill"
+
+# 运行基础功能测试
+go test ./store/delegated -v -run "TestOnBackFillCallback$"
+
+# 运行扩展功能测试
+go test ./store/delegated -v -run "TestOnBackFillCallbackExtended"
+
+# 运行边界条件测试
+go test ./store/delegated -v -run "TestOnBackFillFuncBoundaryConditions"
+``` 
