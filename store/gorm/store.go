@@ -54,9 +54,9 @@ type GormStore[K comparable, V any] struct {
 	afterSet     []func(ctx context.Context, key K, value V) error
 	beforeDel    []func(ctx context.Context, key K) error
 	afterDel     []func(ctx context.Context, key K) error
-	getScopes    []func(*gorm.DB) *gorm.DB
-	setScopes    []func(*gorm.DB) *gorm.DB
-	deleteScopes []func(*gorm.DB) *gorm.DB
+	getScopes    []func(*gorm.DB, K) *gorm.DB
+	setScopes    []func(*gorm.DB, K, V) *gorm.DB
+	deleteScopes []func(*gorm.DB, K) *gorm.DB
 }
 
 // StoreOption 配置 GormStore 的选项
@@ -112,21 +112,21 @@ func WithKeyConverter[K comparable, V any](conv KeyConverter[K]) StoreOption[K, 
 }
 
 // WithGetScope 添加 Get 操作的查询范围
-func WithGetScope[K comparable, V any](scope func(*gorm.DB) *gorm.DB) StoreOption[K, V] {
+func WithGetScope[K comparable, V any](scope func(*gorm.DB, K) *gorm.DB) StoreOption[K, V] {
 	return func(s *GormStore[K, V]) {
 		s.getScopes = append(s.getScopes, scope)
 	}
 }
 
 // WithSetScope 添加 Set 操作的查询范围
-func WithSetScope[K comparable, V any](scope func(*gorm.DB) *gorm.DB) StoreOption[K, V] {
+func WithSetScope[K comparable, V any](scope func(*gorm.DB, K, V) *gorm.DB) StoreOption[K, V] {
 	return func(s *GormStore[K, V]) {
 		s.setScopes = append(s.setScopes, scope)
 	}
 }
 
 // WithDeleteScope 添加 Delete 操作的查询范围
-func WithDeleteScope[K comparable, V any](scope func(*gorm.DB) *gorm.DB) StoreOption[K, V] {
+func WithDeleteScope[K comparable, V any](scope func(*gorm.DB, K) *gorm.DB) StoreOption[K, V] {
 	return func(s *GormStore[K, V]) {
 		s.deleteScopes = append(s.deleteScopes, scope)
 	}
@@ -169,7 +169,7 @@ func (s *GormStore[K, V]) Set(ctx context.Context, key K, value V) error {
 	query := s.db.WithContext(ctx)
 	// 应用 set scopes
 	for _, scope := range s.setScopes {
-		query = scope(query)
+		query = scope(query, key, value)
 	}
 
 	err := query.Save(&value).Error
@@ -206,7 +206,7 @@ func (s *GormStore[K, V]) GetWithOpts(ctx context.Context, key K, opts ...QueryO
 	query := s.db.WithContext(ctx)
 	// 应用 get scopes
 	for _, scope := range s.getScopes {
-		query = scope(query)
+		query = scope(query, key)
 	}
 	// 应用查询选项
 	for _, opt := range opts {
@@ -243,7 +243,7 @@ func (s *GormStore[K, V]) Delete(ctx context.Context, key K) error {
 	query := s.db.WithContext(ctx)
 	// 应用 delete scopes
 	for _, scope := range s.deleteScopes {
-		query = scope(query)
+		query = scope(query, key)
 	}
 
 	result := query.Delete(new(V), s.keyConv.ToDBKey(key))
