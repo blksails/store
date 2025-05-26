@@ -7,11 +7,49 @@ import (
 	"pkg.blksails.net/x/store"
 )
 
+// OperationType 定义存储操作的类型枚举
+type OperationType int
+
+const (
+	// OperationGet 获取操作
+	OperationGet OperationType = iota
+	// OperationSet 设置操作
+	OperationSet
+	// OperationDelete 删除操作
+	OperationDelete
+	// OperationHas 检查存在操作
+	OperationHas
+	// OperationClear 清空操作
+	OperationClear
+	// OperationGetSet 获取并设置操作
+	OperationGetSet
+)
+
+// String 返回操作类型的字符串表示
+func (op OperationType) String() string {
+	switch op {
+	case OperationGet:
+		return "GET"
+	case OperationSet:
+		return "SET"
+	case OperationDelete:
+		return "DELETE"
+	case OperationHas:
+		return "HAS"
+	case OperationClear:
+		return "CLEAR"
+	case OperationGetSet:
+		return "GETSET"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 // Middleware 定义存储操作的中间件
 type Middleware[K comparable, V any] func(next OperationFunc[K, V]) OperationFunc[K, V]
 
 // OperationFunc 表示存储操作的函数类型
-type OperationFunc[K comparable, V any] func(ctx context.Context, key K, value V) (V, error)
+type OperationFunc[K comparable, V any] func(ctx context.Context, op OperationType, key K, value V) (V, error)
 
 // BackFillCallback 定义 backfill 操作的回调函数类型
 // 参数：ctx 上下文, key 键, value 值, layerIndex 被 backfill 的层索引, isPrimary 是否为主存储层
@@ -107,7 +145,7 @@ func (s *DelegatedStore[K, V]) applyMiddlewares(operation OperationFunc[K, V]) O
 
 // Set 存储值到所有层
 func (s *DelegatedStore[K, V]) Set(ctx context.Context, key K, value V) error {
-	op := s.applyMiddlewares(func(ctx context.Context, k K, v V) (V, error) {
+	op := s.applyMiddlewares(func(ctx context.Context, op OperationType, k K, v V) (V, error) {
 		// 首先写入所有主存储
 		for _, layer := range s.layers {
 			if layer.Primary {
@@ -141,13 +179,13 @@ func (s *DelegatedStore[K, V]) Set(ctx context.Context, key K, value V) error {
 		return zero, nil
 	})
 
-	_, err := op(ctx, key, value)
+	_, err := op(ctx, OperationSet, key, value)
 	return err
 }
 
 // Get 按优先级顺序获取值
 func (s *DelegatedStore[K, V]) Get(ctx context.Context, key K) (V, error) {
-	op := s.applyMiddlewares(func(ctx context.Context, k K, _ V) (V, error) {
+	op := s.applyMiddlewares(func(ctx context.Context, op OperationType, k K, _ V) (V, error) {
 		var lastErr error
 
 		// 按优先级顺序查找
@@ -173,7 +211,7 @@ func (s *DelegatedStore[K, V]) Get(ctx context.Context, key K) (V, error) {
 	})
 
 	var zero V
-	return op(ctx, key, zero)
+	return op(ctx, OperationGet, key, zero)
 }
 
 // backfill 将值回填到更高优先级的层
@@ -210,7 +248,7 @@ func (s *DelegatedStore[K, V]) backfill(ctx context.Context, key K, value V, fou
 
 // Delete 从所有层中删除值
 func (s *DelegatedStore[K, V]) Delete(ctx context.Context, key K) error {
-	op := s.applyMiddlewares(func(ctx context.Context, k K, _ V) (V, error) {
+	op := s.applyMiddlewares(func(ctx context.Context, op OperationType, k K, _ V) (V, error) {
 		var lastErr error
 		for _, layer := range s.layers {
 			if err := layer.Store.Delete(ctx, k); err != nil && err != store.ErrNotFound {
@@ -221,13 +259,13 @@ func (s *DelegatedStore[K, V]) Delete(ctx context.Context, key K) error {
 		return zero, lastErr
 	})
 
-	_, err := op(ctx, key, *new(V))
+	_, err := op(ctx, OperationDelete, key, *new(V))
 	return err
 }
 
 // Has 检查任意层是否存在值
 func (s *DelegatedStore[K, V]) Has(ctx context.Context, key K) bool {
-	op := s.applyMiddlewares(func(ctx context.Context, k K, _ V) (V, error) {
+	op := s.applyMiddlewares(func(ctx context.Context, op OperationType, k K, _ V) (V, error) {
 		for _, layer := range s.layers {
 			if layer.Store.Has(ctx, k) {
 				var zero V
@@ -238,13 +276,13 @@ func (s *DelegatedStore[K, V]) Has(ctx context.Context, key K) bool {
 		return zero, store.ErrNotFound
 	})
 
-	_, err := op(ctx, key, *new(V))
+	_, err := op(ctx, OperationHas, key, *new(V))
 	return err == nil
 }
 
 // Clear 清空所有层
 func (s *DelegatedStore[K, V]) Clear(ctx context.Context) error {
-	op := s.applyMiddlewares(func(ctx context.Context, _ K, _ V) (V, error) {
+	op := s.applyMiddlewares(func(ctx context.Context, op OperationType, _ K, _ V) (V, error) {
 		var lastErr error
 		for _, layer := range s.layers {
 			if err := layer.Store.Clear(ctx); err != nil {
@@ -255,19 +293,19 @@ func (s *DelegatedStore[K, V]) Clear(ctx context.Context) error {
 		return zero, lastErr
 	})
 
-	_, err := op(ctx, *new(K), *new(V))
+	_, err := op(ctx, OperationClear, *new(K), *new(V))
 	return err
 }
 
 // Keys 返回所有主存储的键
 func (s *DelegatedStore[K, V]) Keys(ctx context.Context) []K {
-	op := s.applyMiddlewares(func(ctx context.Context, _ K, _ V) (V, error) {
+	op := s.applyMiddlewares(func(ctx context.Context, op OperationType, _ K, _ V) (V, error) {
 		var zero V
 		return zero, nil
 	})
 
 	// 为了保持接口一致，调用中间件但不使用其结果
-	op(ctx, *new(K), *new(V))
+	op(ctx, OperationGet, *new(K), *new(V))
 
 	keyMap := make(map[K]struct{})
 	var keys []K
@@ -294,7 +332,7 @@ func (s *DelegatedStore[K, V]) GetLayer(index int) Layer[K, V] {
 
 // GetSet 获取旧值并设置新值
 func (s *DelegatedStore[K, V]) GetSet(ctx context.Context, key K, value V) (V, error) {
-	op := s.applyMiddlewares(func(ctx context.Context, k K, v V) (V, error) {
+	op := s.applyMiddlewares(func(ctx context.Context, op OperationType, k K, v V) (V, error) {
 		var oldValue V
 		var foundAt = -1
 		var lastErr error
@@ -351,7 +389,7 @@ func (s *DelegatedStore[K, V]) GetSet(ctx context.Context, key K, value V) (V, e
 		return oldValue, store.ErrNotFound
 	})
 
-	return op(ctx, key, value)
+	return op(ctx, OperationGetSet, key, value)
 }
 
 // OnBackFill 添加 backfill 回调函数

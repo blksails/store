@@ -69,24 +69,22 @@ func TestMiddleware(t *testing.T) {
 		})
 		ds.Use(MetricsMiddleware[string, string](recorder))
 
-		// 测试带操作上下文的 Set
+		// 测试 Set 操作
 		operations = nil
 		durations = nil
-		opCtx := WithOperationContext(ctx, "set-operation")
-		err := ds.Set(opCtx, "metrics-key", "metrics-value")
+		err := ds.Set(ctx, "metrics-key", "metrics-value")
 		assert.NoError(t, err)
 		assert.Len(t, operations, 1)
-		assert.Equal(t, "set-operation", operations[0])
+		assert.Equal(t, "SET", operations[0]) // 现在直接使用操作类型字符串
 		assert.True(t, durations[0] > 0)
 
-		// 测试带操作上下文的 Get
+		// 测试 Get 操作
 		operations = nil
 		durations = nil
-		opCtx = WithOperationContext(ctx, "get-operation")
-		_, err = ds.Get(opCtx, "metrics-key")
+		_, err = ds.Get(ctx, "metrics-key")
 		assert.NoError(t, err)
 		assert.Len(t, operations, 1)
-		assert.Equal(t, "get-operation", operations[0])
+		assert.Equal(t, "GET", operations[0]) // 现在直接使用操作类型字符串
 	})
 
 	t.Run("RetryMiddleware", func(t *testing.T) {
@@ -117,7 +115,7 @@ func TestMiddleware(t *testing.T) {
 			},
 		})
 
-		shouldRetry := func(err error) bool {
+		shouldRetry := func(op OperationType, err error) bool {
 			return err != nil && err.Error() == "temporary error"
 		}
 
@@ -159,8 +157,7 @@ func TestMiddleware(t *testing.T) {
 
 		logs = nil
 		operations = nil
-		opCtx := WithOperationContext(ctx, "chained-operation")
-		ds.Set(opCtx, "chain-key", "chain-value")
+		ds.Set(ctx, "chain-key", "chain-value")
 
 		assert.Len(t, logs, 2)
 		assert.Len(t, operations, 1)
@@ -259,7 +256,7 @@ func TestRetryMiddleware(t *testing.T) {
 		var failures int32
 
 		// 创建一个简单的操作函数，前两次失败，第三次成功
-		op := func(ctx context.Context, key string, value string) (string, error) {
+		op := func(ctx context.Context, op OperationType, key string, value string) (string, error) {
 			count := atomic.AddInt32(&failures, 1)
 			t.Logf("尝试 #%d", count)
 
@@ -270,7 +267,7 @@ func TestRetryMiddleware(t *testing.T) {
 		}
 
 		// 应用重试中间件
-		retryOp := RetryMiddleware[string, string](5, func(err error) bool {
+		retryOp := RetryMiddleware[string, string](5, func(op OperationType, err error) bool {
 			return err != nil
 		})(op)
 
@@ -278,7 +275,7 @@ func TestRetryMiddleware(t *testing.T) {
 		atomic.StoreInt32(&failures, 0)
 
 		// 执行操作
-		result, err := retryOp(ctx, "test-key", "test-value")
+		result, err := retryOp(ctx, OperationGet, "test-key", "test-value")
 
 		// 验证结果
 		require.NoError(t, err, "操作应该成功")
@@ -291,14 +288,14 @@ func TestRetryMiddleware(t *testing.T) {
 		var attempts int32
 
 		// 创建一个总是失败的操作函数
-		op := func(ctx context.Context, key string, value string) (string, error) {
+		op := func(ctx context.Context, op OperationType, key string, value string) (string, error) {
 			count := atomic.AddInt32(&attempts, 1)
 			t.Logf("尝试 #%d", count)
 			return "", errors.New("持续错误")
 		}
 
 		// 应用重试中间件，最多重试3次
-		retryOp := RetryMiddleware[string, string](3, func(err error) bool {
+		retryOp := RetryMiddleware[string, string](3, func(op OperationType, err error) bool {
 			return err != nil
 		})(op)
 
@@ -306,7 +303,7 @@ func TestRetryMiddleware(t *testing.T) {
 		atomic.StoreInt32(&attempts, 0)
 
 		// 执行操作
-		_, err := retryOp(ctx, "test-key", "test-value")
+		_, err := retryOp(ctx, OperationGet, "test-key", "test-value")
 
 		// 验证结果
 		require.Error(t, err, "操作应该失败")
@@ -319,7 +316,7 @@ func TestRetryMiddleware(t *testing.T) {
 		var attempts int32
 
 		// 创建一个会返回不同错误的操作函数
-		op := func(ctx context.Context, key string, value string) (string, error) {
+		op := func(ctx context.Context, op OperationType, key string, value string) (string, error) {
 			count := atomic.AddInt32(&attempts, 1)
 			t.Logf("尝试 #%d", count)
 
@@ -332,7 +329,7 @@ func TestRetryMiddleware(t *testing.T) {
 		}
 
 		// 应用重试中间件，只重试特定错误
-		retryOp := RetryMiddleware[string, string](5, func(err error) bool {
+		retryOp := RetryMiddleware[string, string](5, func(op OperationType, err error) bool {
 			return err != nil && err.Error() == "可重试错误"
 		})(op)
 
@@ -340,7 +337,7 @@ func TestRetryMiddleware(t *testing.T) {
 		atomic.StoreInt32(&attempts, 0)
 
 		// 执行操作
-		_, err := retryOp(ctx, "test-key", "test-value")
+		_, err := retryOp(ctx, OperationGet, "test-key", "test-value")
 
 		// 验证结果
 		require.Error(t, err, "操作应该失败")

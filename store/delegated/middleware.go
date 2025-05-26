@@ -7,19 +7,20 @@ import (
 )
 
 // LoggingMiddleware 返回一个记录操作的中间件
+// 现在可以根据操作类型记录不同的日志信息
 func LoggingMiddleware[K comparable, V any](logf func(format string, v ...interface{})) Middleware[K, V] {
 	if logf == nil {
 		logf = log.Printf
 	}
 
 	return func(next OperationFunc[K, V]) OperationFunc[K, V] {
-		return func(ctx context.Context, key K, value V) (V, error) {
-			logf("store: key=%v", key)
-			result, err := next(ctx, key, value)
+		return func(ctx context.Context, op OperationType, key K, value V) (V, error) {
+			logf("store: %s operation, key=%v", op.String(), key)
+			result, err := next(ctx, op, key, value)
 			if err != nil {
-				logf("store: key=%v, error=%v", key, err)
+				logf("store: %s operation failed, key=%v, error=%v", op.String(), key, err)
 			} else {
-				logf("store: key=%v, success", key)
+				logf("store: %s operation success, key=%v", op.String(), key)
 			}
 			return result, err
 		}
@@ -27,6 +28,7 @@ func LoggingMiddleware[K comparable, V any](logf func(format string, v ...interf
 }
 
 // MetricsMiddleware 返回一个用于收集性能指标的中间件
+// 现在可以根据操作类型收集不同的指标
 func MetricsMiddleware[K comparable, V any](
 	recordLatency func(operation string, duration time.Duration),
 ) Middleware[K, V] {
@@ -35,54 +37,52 @@ func MetricsMiddleware[K comparable, V any](
 	}
 
 	return func(next OperationFunc[K, V]) OperationFunc[K, V] {
-		return func(ctx context.Context, key K, value V) (V, error) {
-			operation := "unknown"
-			if op := ctx.Value("operation"); op != nil {
-				if opStr, ok := op.(string); ok {
-					operation = opStr
-				}
-			}
-
+		return func(ctx context.Context, op OperationType, key K, value V) (V, error) {
 			start := time.Now()
-			result, err := next(ctx, key, value)
+			result, err := next(ctx, op, key, value)
 			duration := time.Since(start)
 
-			recordLatency(operation, duration)
+			// 使用操作类型字符串作为指标标签
+			recordLatency(op.String(), duration)
 			return result, err
 		}
 	}
 }
 
 // RetryMiddleware 返回一个在操作失败时重试的中间件
-func RetryMiddleware[K comparable, V any](attempts int, shouldRetry func(err error) bool) Middleware[K, V] {
+// 现在可以根据操作类型决定是否需要重试
+func RetryMiddleware[K comparable, V any](attempts int, shouldRetry func(op OperationType, err error) bool) Middleware[K, V] {
 	if shouldRetry == nil {
-		shouldRetry = func(err error) bool { return err != nil }
+		shouldRetry = func(op OperationType, err error) bool {
+			// 默认只对读操作进行重试，写操作可能有副作用
+			return err != nil && (op == OperationGet || op == OperationHas)
+		}
 	}
 
 	return func(next OperationFunc[K, V]) OperationFunc[K, V] {
-		return func(ctx context.Context, key K, value V) (V, error) {
+		return func(ctx context.Context, op OperationType, key K, value V) (V, error) {
 			var result V
 			var err error
 
 			for i := 0; i < attempts; i++ {
-				result, err = next(ctx, key, value)
-				if !shouldRetry(err) {
-					log.Printf("RetryMiddleware: 尝试 %d 成功或不需要重试: %v", i+1, err)
+				result, err = next(ctx, op, key, value)
+				if !shouldRetry(op, err) {
+					log.Printf("RetryMiddleware: %s operation attempt %d success or no retry needed: %v", op.String(), i+1, err)
 					return result, err
 				}
 
-				log.Printf("RetryMiddleware: 尝试 %d 失败: %v, 将重试", i+1, err)
+				log.Printf("RetryMiddleware: %s operation attempt %d failed: %v, will retry", op.String(), i+1, err)
 
 				// 如果这是最后一次尝试，则返回当前结果
 				if i == attempts-1 {
-					log.Printf("RetryMiddleware: 达到最大尝试次数 %d, 返回最后结果", attempts)
+					log.Printf("RetryMiddleware: reached max attempts %d for %s operation, returning last result", attempts, op.String())
 					return result, err
 				}
 
 				// 简单的指数退避
 				backoff := time.Duration(1<<uint(i)) * time.Millisecond
 				if i > 0 {
-					log.Printf("RetryMiddleware: 等待 %v 后重试", backoff)
+					log.Printf("RetryMiddleware: waiting %v before retry for %s operation", backoff, op.String())
 					time.Sleep(backoff)
 				}
 			}
@@ -92,7 +92,35 @@ func RetryMiddleware[K comparable, V any](attempts int, shouldRetry func(err err
 	}
 }
 
-// WithOperationContext 返回一个带有操作名称的上下文
-func WithOperationContext(ctx context.Context, operation string) context.Context {
-	return context.WithValue(ctx, "operation", operation)
+// CacheStatsMiddleware 返回一个收集缓存统计的中间件
+// 根据操作类型和结果收集缓存命中率等统计信息
+func CacheStatsMiddleware[K comparable, V any](
+	recordStats func(op OperationType, hit bool, duration time.Duration),
+) Middleware[K, V] {
+	if recordStats == nil {
+		recordStats = func(OperationType, bool, time.Duration) {}
+	}
+
+	return func(next OperationFunc[K, V]) OperationFunc[K, V] {
+		return func(ctx context.Context, op OperationType, key K, value V) (V, error) {
+			start := time.Now()
+			result, err := next(ctx, op, key, value)
+			duration := time.Since(start)
+
+			// 根据操作类型和结果判断是否命中
+			var hit bool
+			switch op {
+			case OperationGet:
+				hit = (err == nil)
+			case OperationHas:
+				hit = (err == nil)
+			default:
+				// 对于写操作，不统计命中率
+				hit = false
+			}
+
+			recordStats(op, hit, duration)
+			return result, err
+		}
+	}
 }

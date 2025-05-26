@@ -867,9 +867,9 @@ func TestNewDelegatedStoreWithOptions(t *testing.T) {
 		var logs []string
 
 		loggingMiddleware := func(next OperationFunc[string, string]) OperationFunc[string, string] {
-			return func(ctx context.Context, key string, value string) (string, error) {
+			return func(ctx context.Context, op OperationType, key string, value string) (string, error) {
 				logs = append(logs, "before: "+key)
-				result, err := next(ctx, key, value)
+				result, err := next(ctx, op, key, value)
 				logs = append(logs, "after: "+key)
 				return result, err
 			}
@@ -891,18 +891,18 @@ func TestNewDelegatedStoreWithOptions(t *testing.T) {
 		var logs []string
 
 		middleware1 := func(next OperationFunc[string, string]) OperationFunc[string, string] {
-			return func(ctx context.Context, key string, value string) (string, error) {
+			return func(ctx context.Context, op OperationType, key string, value string) (string, error) {
 				logs = append(logs, "middleware1-before")
-				result, err := next(ctx, key, value)
+				result, err := next(ctx, op, key, value)
 				logs = append(logs, "middleware1-after")
 				return result, err
 			}
 		}
 
 		middleware2 := func(next OperationFunc[string, string]) OperationFunc[string, string] {
-			return func(ctx context.Context, key string, value string) (string, error) {
+			return func(ctx context.Context, op OperationType, key string, value string) (string, error) {
 				logs = append(logs, "middleware2-before")
-				result, err := next(ctx, key, value)
+				result, err := next(ctx, op, key, value)
 				logs = append(logs, "middleware2-after")
 				return result, err
 			}
@@ -932,9 +932,9 @@ func TestNewDelegatedStoreWithOptions(t *testing.T) {
 		}
 
 		middleware := func(next OperationFunc[string, string]) OperationFunc[string, string] {
-			return func(ctx context.Context, key string, value string) (string, error) {
+			return func(ctx context.Context, op OperationType, key string, value string) (string, error) {
 				logs = append(logs, "middleware-called")
-				return next(ctx, key, value)
+				return next(ctx, op, key, value)
 			}
 		}
 
