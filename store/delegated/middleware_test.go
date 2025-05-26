@@ -161,7 +161,7 @@ func TestMiddleware(t *testing.T) {
 
 		assert.Len(t, logs, 2)
 		assert.Len(t, operations, 1)
-		assert.Equal(t, "chained-operation", operations[0])
+		assert.Equal(t, "SET", operations[0]) // 现在直接使用操作类型字符串
 	})
 }
 

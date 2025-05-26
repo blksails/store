@@ -119,6 +119,68 @@ func defaultStore() *DelegatedStore[string, string] {
 	return NewDelegatedStore(layers)
 }
 
+// directStoreForMiddleware 可以直接指定操作函数的存储
+type directStoreForMiddleware[K comparable, V any] struct {
+	getFn    func(context.Context, K) (V, error)
+	setFn    func(context.Context, K, V) error
+	deleteFn func(context.Context, K) error
+	hasFn    func(context.Context, K) bool
+	clearFn  func(context.Context) error
+	keysFn   func(context.Context) []K
+	getSetFn func(context.Context, K, V) (V, error)
+}
+
+func (s *directStoreForMiddleware[K, V]) Get(ctx context.Context, key K) (V, error) {
+	if s.getFn != nil {
+		return s.getFn(ctx, key)
+	}
+	var zero V
+	return zero, errors.New("not implemented")
+}
+
+func (s *directStoreForMiddleware[K, V]) Set(ctx context.Context, key K, value V) error {
+	if s.setFn != nil {
+		return s.setFn(ctx, key, value)
+	}
+	return errors.New("not implemented")
+}
+
+func (s *directStoreForMiddleware[K, V]) Delete(ctx context.Context, key K) error {
+	if s.deleteFn != nil {
+		return s.deleteFn(ctx, key)
+	}
+	return errors.New("not implemented")
+}
+
+func (s *directStoreForMiddleware[K, V]) Has(ctx context.Context, key K) bool {
+	if s.hasFn != nil {
+		return s.hasFn(ctx, key)
+	}
+	return false
+}
+
+func (s *directStoreForMiddleware[K, V]) Clear(ctx context.Context) error {
+	if s.clearFn != nil {
+		return s.clearFn(ctx)
+	}
+	return errors.New("not implemented")
+}
+
+func (s *directStoreForMiddleware[K, V]) Keys(ctx context.Context) []K {
+	if s.keysFn != nil {
+		return s.keysFn(ctx)
+	}
+	return nil
+}
+
+func (s *directStoreForMiddleware[K, V]) GetSet(ctx context.Context, key K, value V) (V, error) {
+	if s.getSetFn != nil {
+		return s.getSetFn(ctx, key, value)
+	}
+	var zero V
+	return zero, errors.New("not implemented")
+}
+
 func TestMiddlewareWithOperationType(t *testing.T) {
 	ctx := context.Background()
 
@@ -213,8 +275,12 @@ func TestMiddlewareWithOperationType(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "access denied")
 
+		// 先设置一个 secret- 键（通过直接操作底层存储）
+		err = ds.GetLayer(1).Store.Set(ctx, "secret-test", "secret-value")
+		require.NoError(t, err)
+
 		// 测试读操作仍然被允许（即使对 secret- 键）
-		_, err = ds.Get(ctx, "secret-key")
+		_, err = ds.Get(ctx, "secret-test")
 		assert.NoError(t, err) // 读操作应该被允许
 	})
 
@@ -257,28 +323,43 @@ func TestMiddlewareWithOperationType(t *testing.T) {
 	})
 
 	t.Run("ConditionalRetryMiddleware", func(t *testing.T) {
-		retryCount := 0
+		var retryCount int32
 
 		// 创建条件重试中间件 - 只对读操作重试
 		conditionalRetryMiddleware := func(next OperationFunc[string, string]) OperationFunc[string, string] {
 			return func(ctx context.Context, op OperationType, key string, value string) (string, error) {
-				result, err := next(ctx, op, key, value)
+				maxRetries := 3
+				for attempt := 0; attempt < maxRetries; attempt++ {
+					result, err := next(ctx, op, key, value)
 
-				// 只对读操作失败时重试
-				if err != nil && (op == OperationGet || op == OperationHas) && retryCount < 2 {
-					retryCount++
-					// 简单重试一次
-					return next(ctx, op, key, value)
+					// 如果成功或者不是需要重试的操作类型，直接返回
+					if err == nil || !(op == OperationGet || op == OperationHas) {
+						return result, err
+					}
+
+					// 如果这是最后一次尝试，返回结果
+					if attempt == maxRetries-1 {
+						return result, err
+					}
+
+					// 记录重试次数
+					atomic.AddInt32(&retryCount, 1)
 				}
 
-				return result, err
+				// 这行不应该被执行到，但为了安全起见保留
+				var zero string
+				return zero, errors.New("unexpected error")
 			}
 		}
 
-		// 创建一个会失败的存储
-		failingStore := &mockStoreForMiddleware[string, string]{
-			data:  make(map[string]string),
-			delay: 0,
+		// 创建一个总是返回错误的存储
+		failingStore := &directStoreForMiddleware[string, string]{
+			getFn: func(ctx context.Context, key string) (string, error) {
+				return "", errors.New("always fails")
+			},
+			setFn: func(ctx context.Context, key string, value string) error {
+				return nil // Set 操作总是成功
+			},
 		}
 
 		ds := NewDelegatedStore([]Layer[string, string]{
@@ -289,14 +370,14 @@ func TestMiddlewareWithOperationType(t *testing.T) {
 		// 测试 Get 操作（应该被重试）
 		_, err := ds.Get(ctx, "nonexistent-key")
 		assert.Error(t, err) // 最终仍然失败
-		assert.Equal(t, 2, retryCount, "Get 操作应该被重试")
+		assert.Equal(t, int32(2), atomic.LoadInt32(&retryCount), "Get 操作应该被重试")
 
 		// 重置计数器
-		retryCount = 0
+		atomic.StoreInt32(&retryCount, 0)
 
 		// 测试 Set 操作（不应该被重试）
 		err = ds.Set(ctx, "test-key", "test-value")
 		assert.NoError(t, err) // Set 应该成功
-		assert.Equal(t, 0, retryCount, "Set 操作不应该被重试")
+		assert.Equal(t, int32(0), atomic.LoadInt32(&retryCount), "Set 操作不应该被重试")
 	})
 }
