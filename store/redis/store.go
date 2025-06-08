@@ -14,6 +14,8 @@ type RedisStore[K comparable, V any] struct {
 	client     *redis.Client
 	keyPrefix  string        // 键前缀，用于隔离不同的存储实例
 	defaultTTL time.Duration // 默认的过期时间，0 表示永不过期
+	onChange   []store.OnChangeCallback[K, V]
+	onDelete   []store.OnDeleteCallback[K, V]
 }
 
 // Options 配置 RedisStore 的选项
@@ -22,13 +24,37 @@ type Options struct {
 	DefaultTTL time.Duration
 }
 
+// StoreOption 配置 RedisStore 的选项函数
+type StoreOption[K comparable, V any] func(*RedisStore[K, V])
+
+// WithOnChange 添加值变更回调函数
+func WithOnChange[K comparable, V any](callback store.OnChangeCallback[K, V]) StoreOption[K, V] {
+	return func(s *RedisStore[K, V]) {
+		s.onChange = append(s.onChange, callback)
+	}
+}
+
+// WithOnDelete 添加值删除回调函数
+func WithOnDelete[K comparable, V any](callback store.OnDeleteCallback[K, V]) StoreOption[K, V] {
+	return func(s *RedisStore[K, V]) {
+		s.onDelete = append(s.onDelete, callback)
+	}
+}
+
 // NewRedisStore 创建一个新的 Redis 存储
-func NewRedisStore[K comparable, V any](client *redis.Client, opts Options) *RedisStore[K, V] {
-	return &RedisStore[K, V]{
+func NewRedisStore[K comparable, V any](client *redis.Client, opts Options, storeOpts ...StoreOption[K, V]) *RedisStore[K, V] {
+	store := &RedisStore[K, V]{
 		client:     client,
 		keyPrefix:  opts.KeyPrefix,
 		defaultTTL: opts.DefaultTTL,
 	}
+
+	// 应用选项
+	for _, opt := range storeOpts {
+		opt(store)
+	}
+
+	return store
 }
 
 // formatKey 格式化存储键
@@ -44,12 +70,36 @@ func (s *RedisStore[K, V]) Set(ctx context.Context, key K, value V) error {
 
 // SetWithTTL 存储键值对并设置过期时间
 func (s *RedisStore[K, V]) SetWithTTL(ctx context.Context, key K, value V, ttl time.Duration) error {
+	// 获取旧值用于变更回调
+	var oldValue V
+	oldValueJSON, err := s.client.Get(ctx, s.formatKey(key)).Bytes()
+	hasOldValue := err == nil
+	if hasOldValue {
+		if err := json.Unmarshal(oldValueJSON, &oldValue); err != nil {
+			return err
+		}
+	}
+
 	valueJSON, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
 
-	return s.client.Set(ctx, s.formatKey(key), valueJSON, ttl).Err()
+	err = s.client.Set(ctx, s.formatKey(key), valueJSON, ttl).Err()
+	if err != nil {
+		return err
+	}
+
+	// 执行变更回调
+	if hasOldValue {
+		for _, callback := range s.onChange {
+			if err := callback(ctx, key, oldValue, value); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // Get 获取指定键的值
@@ -72,6 +122,20 @@ func (s *RedisStore[K, V]) Get(ctx context.Context, key K) (V, error) {
 
 // Delete 删除指定键的值
 func (s *RedisStore[K, V]) Delete(ctx context.Context, key K) error {
+	// 获取要删除的值用于回调
+	var value V
+	valueJSON, err := s.client.Get(ctx, s.formatKey(key)).Bytes()
+	if err == redis.Nil {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := json.Unmarshal(valueJSON, &value); err != nil {
+		return err
+	}
+
 	result, err := s.client.Del(ctx, s.formatKey(key)).Result()
 	if err != nil {
 		return err
@@ -79,6 +143,14 @@ func (s *RedisStore[K, V]) Delete(ctx context.Context, key K) error {
 	if result == 0 {
 		return store.ErrNotFound
 	}
+
+	// 执行删除回调
+	for _, callback := range s.onDelete {
+		if err := callback(ctx, key, value); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

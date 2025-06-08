@@ -8,14 +8,31 @@ import (
 
 // LoggingMiddleware 返回一个记录操作的中间件
 // 现在可以根据操作类型记录不同的日志信息
-func LoggingMiddleware[K comparable, V any](logf func(format string, v ...interface{})) Middleware[K, V] {
+func LoggingMiddleware[K comparable, V any](logf func(format string, v ...interface{}), opts ...LogginOptionFunc) Middleware[K, V] {
 	if logf == nil {
 		logf = log.Printf
 	}
 
+	var opt = &LogginOption{}
+
+	for _, o := range opts {
+		o(opt)
+	}
+
+	skipOperation := opt.SkipOperation
+	if skipOperation == nil {
+		skipOperation = func(op OperationType) bool {
+			return false
+		}
+	}
+
 	return func(next OperationFunc[K, V]) OperationFunc[K, V] {
 		return func(ctx context.Context, op OperationType, key K, value V) (V, error) {
-			logf("store: %s operation, key=%v", op.String(), key)
+			if skipOperation(op) {
+				return next(ctx, op, key, value)
+			}
+
+			logf("store: %s operation, key=%v, type=%T", op.String(), key, value)
 			result, err := next(ctx, op, key, value)
 			if err != nil {
 				logf("store: %s operation failed, key=%v, error=%v", op.String(), key, err)
@@ -24,6 +41,18 @@ func LoggingMiddleware[K comparable, V any](logf func(format string, v ...interf
 			}
 			return result, err
 		}
+	}
+}
+
+type LogginOption struct {
+	SkipOperation func(op OperationType) bool
+}
+
+type LogginOptionFunc func(opt *LogginOption)
+
+func WithSkipOperation(skipOperation func(op OperationType) bool) LogginOptionFunc {
+	return func(opt *LogginOption) {
+		opt.SkipOperation = skipOperation
 	}
 }
 

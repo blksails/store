@@ -5,6 +5,14 @@ import (
 	"errors"
 )
 
+// OnChangeCallback 定义值变更的回调函数类型
+// 参数：ctx 上下文, key 键, oldValue 旧值, newValue 新值
+type OnChangeCallback[K comparable, V any] func(ctx context.Context, key K, oldValue V, newValue V) error
+
+// OnDeleteCallback 定义值删除的回调函数类型
+// 参数：ctx 上下文, key 键, value 被删除的值
+type OnDeleteCallback[K comparable, V any] func(ctx context.Context, key K, value V) error
+
 // Store 定义了一个通用的键值存储接口
 // K 表示键的类型，必须是可比较的
 // V 表示值的类型

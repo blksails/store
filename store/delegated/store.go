@@ -19,6 +19,8 @@ const (
 	OperationDelete
 	// OperationHas 检查存在操作
 	OperationHas
+	// OperationKeys 获取所有键操作
+	OperationKeys
 	// OperationClear 清空操作
 	OperationClear
 	// OperationGetSet 获取并设置操作
@@ -36,6 +38,8 @@ func (op OperationType) String() string {
 		return "DELETE"
 	case OperationHas:
 		return "HAS"
+	case OperationKeys:
+		return "KEYS"
 	case OperationClear:
 		return "CLEAR"
 	case OperationGetSet:
@@ -87,6 +91,34 @@ func WithMiddlewares[K comparable, V any](middlewares ...Middleware[K, V]) Deleg
 	}
 }
 
+// WithOnChange 设置值变更回调函数选项
+func WithOnChange[K comparable, V any](callback store.OnChangeCallback[K, V]) DelegatedStoreOpt[K, V] {
+	return func(ds *DelegatedStore[K, V]) {
+		ds.onChange = append(ds.onChange, callback)
+	}
+}
+
+// WithOnChangeCallbacks 设置多个值变更回调函数选项
+func WithOnChangeCallbacks[K comparable, V any](callbacks ...store.OnChangeCallback[K, V]) DelegatedStoreOpt[K, V] {
+	return func(ds *DelegatedStore[K, V]) {
+		ds.onChange = append(ds.onChange, callbacks...)
+	}
+}
+
+// WithOnDelete 设置值删除回调函数选项
+func WithOnDelete[K comparable, V any](callback store.OnDeleteCallback[K, V]) DelegatedStoreOpt[K, V] {
+	return func(ds *DelegatedStore[K, V]) {
+		ds.onDelete = append(ds.onDelete, callback)
+	}
+}
+
+// WithOnDeleteCallbacks 设置多个值删除回调函数选项
+func WithOnDeleteCallbacks[K comparable, V any](callbacks ...store.OnDeleteCallback[K, V]) DelegatedStoreOpt[K, V] {
+	return func(ds *DelegatedStore[K, V]) {
+		ds.onDelete = append(ds.onDelete, callbacks...)
+	}
+}
+
 // Layer 表示存储层配置
 type Layer[K comparable, V any] struct {
 	Store   store.Store[K, V] // 存储实现
@@ -99,6 +131,8 @@ type DelegatedStore[K comparable, V any] struct {
 	layers          []Layer[K, V]
 	middlewares     []Middleware[K, V]
 	onBackFillFuncs []BackFillCallback[K, V]
+	onChange        []store.OnChangeCallback[K, V]
+	onDelete        []store.OnDeleteCallback[K, V]
 }
 
 // NewDelegatedStore 创建一个新的分层存储
@@ -146,6 +180,18 @@ func (s *DelegatedStore[K, V]) applyMiddlewares(operation OperationFunc[K, V]) O
 // Set 存储值到所有层
 func (s *DelegatedStore[K, V]) Set(ctx context.Context, key K, value V) error {
 	op := s.applyMiddlewares(func(ctx context.Context, op OperationType, k K, v V) (V, error) {
+		// 获取旧值用于变更回调
+		var oldValue V
+		var hasOldValue bool
+		for _, layer := range s.layers {
+			val, err := layer.Store.Get(ctx, k)
+			if err == nil {
+				oldValue = val
+				hasOldValue = true
+				break
+			}
+		}
+
 		// 首先写入所有主存储
 		for _, layer := range s.layers {
 			if layer.Primary {
@@ -171,6 +217,16 @@ func (s *DelegatedStore[K, V]) Set(ctx context.Context, key K, value V) error {
 						var zero V
 						return zero, err
 					}
+				}
+			}
+		}
+
+		// 执行变更回调
+		if hasOldValue {
+			for _, callback := range s.onChange {
+				if err := callback(ctx, k, oldValue, v); err != nil {
+					var zero V
+					return zero, err
 				}
 			}
 		}
@@ -246,15 +302,38 @@ func (s *DelegatedStore[K, V]) backfill(ctx context.Context, key K, value V, fou
 	}
 }
 
-// Delete 从所有层中删除值
+// Delete 删除指定键的值
 func (s *DelegatedStore[K, V]) Delete(ctx context.Context, key K) error {
 	op := s.applyMiddlewares(func(ctx context.Context, op OperationType, k K, _ V) (V, error) {
+		// 获取要删除的值用于回调
+		var value V
+		var hasValue bool
+		for _, layer := range s.layers {
+			val, err := layer.Store.Get(ctx, k)
+			if err == nil {
+				value = val
+				hasValue = true
+				break
+			}
+		}
+
 		var lastErr error
 		for _, layer := range s.layers {
 			if err := layer.Store.Delete(ctx, k); err != nil && err != store.ErrNotFound {
 				lastErr = err
 			}
 		}
+
+		// 执行删除回调
+		if hasValue {
+			for _, callback := range s.onDelete {
+				if err := callback(ctx, k, value); err != nil {
+					var zero V
+					return zero, err
+				}
+			}
+		}
+
 		var zero V
 		return zero, lastErr
 	})
@@ -305,7 +384,7 @@ func (s *DelegatedStore[K, V]) Keys(ctx context.Context) []K {
 	})
 
 	// 为了保持接口一致，调用中间件但不使用其结果
-	op(ctx, OperationGet, *new(K), *new(V))
+	op(ctx, OperationKeys, *new(K), *new(V))
 
 	keyMap := make(map[K]struct{})
 	var keys []K

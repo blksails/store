@@ -962,3 +962,201 @@ func TestNewDelegatedStoreWithOptions(t *testing.T) {
 		assert.Contains(t, logs, "middleware-called")
 	})
 }
+
+func TestOnChangeAndOnDeleteCallbacks(t *testing.T) {
+	ctx := context.Background()
+	store1 := newMockStore[string, string](0)
+	store2 := newMockStore[string, string](0)
+
+	t.Run("OnChange Callback", func(t *testing.T) {
+		var onChangeCalls []struct {
+			key      string
+			oldValue string
+			newValue string
+		}
+
+		// 创建带有变更回调的存储
+		ds := NewDelegatedStore([]Layer[string, string]{
+			{
+				Store:   store1,
+				TTL:     time.Minute,
+				Primary: false,
+			},
+			{
+				Store:   store2,
+				Primary: true,
+			},
+		}, WithOnChange(func(ctx context.Context, key string, oldValue string, newValue string) error {
+			onChangeCalls = append(onChangeCalls, struct {
+				key      string
+				oldValue string
+				newValue string
+			}{key, oldValue, newValue})
+			return nil
+		}))
+
+		// 测试新值设置
+		err := ds.Set(ctx, "change-key", "value1")
+		require.NoError(t, err)
+		assert.Len(t, onChangeCalls, 0, "设置新值时不应该触发变更回调")
+
+		// 测试值更新
+		err = ds.Set(ctx, "change-key", "value2")
+		require.NoError(t, err)
+		require.Len(t, onChangeCalls, 1, "更新值时应该触发一次变更回调")
+		assert.Equal(t, "change-key", onChangeCalls[0].key)
+		assert.Equal(t, "value1", onChangeCalls[0].oldValue)
+		assert.Equal(t, "value2", onChangeCalls[0].newValue)
+	})
+
+	t.Run("OnDelete Callback", func(t *testing.T) {
+		var onDeleteCalls []struct {
+			key   string
+			value string
+		}
+
+		// 创建带有删除回调的存储
+		ds := NewDelegatedStore([]Layer[string, string]{
+			{
+				Store:   store1,
+				TTL:     time.Minute,
+				Primary: false,
+			},
+			{
+				Store:   store2,
+				Primary: true,
+			},
+		}, WithOnDelete(func(ctx context.Context, key string, value string) error {
+			onDeleteCalls = append(onDeleteCalls, struct {
+				key   string
+				value string
+			}{key, value})
+			return nil
+		}))
+
+		// 设置一个值
+		err := ds.Set(ctx, "delete-key", "delete-value")
+		require.NoError(t, err)
+
+		// 删除值
+		err = ds.Delete(ctx, "delete-key")
+		require.NoError(t, err)
+		require.Len(t, onDeleteCalls, 1, "删除值时应该触发一次删除回调")
+		assert.Equal(t, "delete-key", onDeleteCalls[0].key)
+		assert.Equal(t, "delete-value", onDeleteCalls[0].value)
+	})
+
+	t.Run("Multiple Callbacks", func(t *testing.T) {
+		var callback1Calls, callback2Calls int
+
+		// 创建带有多个变更回调的存储
+		ds := NewDelegatedStore([]Layer[string, string]{
+			{
+				Store:   store1,
+				TTL:     time.Minute,
+				Primary: false,
+			},
+			{
+				Store:   store2,
+				Primary: true,
+			},
+		}, WithOnChangeCallbacks(
+			func(ctx context.Context, key string, oldValue string, newValue string) error {
+				callback1Calls++
+				return nil
+			},
+			func(ctx context.Context, key string, oldValue string, newValue string) error {
+				callback2Calls++
+				return nil
+			},
+		))
+
+		// 设置初始值
+		err := ds.Set(ctx, "multi-key", "value1")
+		require.NoError(t, err)
+
+		// 更新值
+		err = ds.Set(ctx, "multi-key", "value2")
+		require.NoError(t, err)
+
+		// 验证两个回调都被调用
+		assert.Equal(t, 1, callback1Calls)
+		assert.Equal(t, 1, callback2Calls)
+	})
+
+	t.Run("Callback Error Handling", func(t *testing.T) {
+		expectedErr := fmt.Errorf("callback error")
+
+		// 创建带有返回错误的变更回调的存储
+		ds := NewDelegatedStore([]Layer[string, string]{
+			{
+				Store:   store1,
+				TTL:     time.Minute,
+				Primary: false,
+			},
+			{
+				Store:   store2,
+				Primary: true,
+			},
+		}, WithOnChange(func(ctx context.Context, key string, oldValue string, newValue string) error {
+			return expectedErr
+		}))
+
+		// 设置初始值
+		err := ds.Set(ctx, "error-key", "value1")
+		require.NoError(t, err)
+
+		// 尝试更新值，应该返回回调错误
+		err = ds.Set(ctx, "error-key", "value2")
+		assert.ErrorIs(t, err, expectedErr)
+
+		// 验证值没有被更新
+		value, err := ds.Get(ctx, "error-key")
+		require.NoError(t, err)
+		assert.Equal(t, "value1", value)
+	})
+
+	t.Run("Callback Execution Order", func(t *testing.T) {
+		var executionOrder []string
+
+		// 创建带有按顺序执行的变更回调的存储
+		ds := NewDelegatedStore([]Layer[string, string]{
+			{
+				Store:   store1,
+				TTL:     time.Minute,
+				Primary: false,
+			},
+			{
+				Store:   store2,
+				Primary: true,
+			},
+		}, WithOnChangeCallbacks(
+			func(ctx context.Context, key string, oldValue string, newValue string) error {
+				executionOrder = append(executionOrder, "first")
+				return nil
+			},
+			func(ctx context.Context, key string, oldValue string, newValue string) error {
+				executionOrder = append(executionOrder, "second")
+				return nil
+			},
+			func(ctx context.Context, key string, oldValue string, newValue string) error {
+				executionOrder = append(executionOrder, "third")
+				return nil
+			},
+		))
+
+		// 设置初始值
+		err := ds.Set(ctx, "order-key", "value1")
+		require.NoError(t, err)
+
+		// 更新值
+		err = ds.Set(ctx, "order-key", "value2")
+		require.NoError(t, err)
+
+		// 验证回调按注册顺序执行
+		require.Len(t, executionOrder, 3)
+		assert.Equal(t, "first", executionOrder[0])
+		assert.Equal(t, "second", executionOrder[1])
+		assert.Equal(t, "third", executionOrder[2])
+	})
+}
