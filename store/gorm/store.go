@@ -46,17 +46,19 @@ func (c CompositeKeyConverter[K]) ToDBKey(key K) interface{} {
 
 // GormStore 是基于 GORM 的存储实现
 type GormStore[K comparable, V any] struct {
-	db           *gorm.DB
-	keyConv      KeyConverter[K]
-	beforeGet    []func(ctx context.Context, key K) error
-	afterGet     []func(ctx context.Context, key K, value V) error
-	beforeSet    []func(ctx context.Context, key K, value V) error
-	afterSet     []func(ctx context.Context, key K, value V) error
-	beforeDel    []func(ctx context.Context, key K) error
-	afterDel     []func(ctx context.Context, key K) error
-	getScopes    []func(*gorm.DB, K) *gorm.DB
-	setScopes    []func(*gorm.DB, K, V) *gorm.DB
-	deleteScopes []func(*gorm.DB, K) *gorm.DB
+	db            *gorm.DB
+	keyConv       KeyConverter[K]
+	modelToEntity func(entity *V) any // 将实体转换为模型
+	entityToModel func(model any) *V  // 将模型转换为实体
+	beforeGet     []func(ctx context.Context, key K) error
+	afterGet      []func(ctx context.Context, key K, value V) error
+	beforeSet     []func(ctx context.Context, key K, value V) error
+	afterSet      []func(ctx context.Context, key K, value V) error
+	beforeDel     []func(ctx context.Context, key K) error
+	afterDel      []func(ctx context.Context, key K) error
+	getScopes     []func(*gorm.DB, K) *gorm.DB
+	setScopes     []func(*gorm.DB, K, V) *gorm.DB
+	deleteScopes  []func(*gorm.DB, K) *gorm.DB
 }
 
 // StoreOption 配置 GormStore 的选项
@@ -132,6 +134,14 @@ func WithDeleteScope[K comparable, V any](scope func(*gorm.DB, K) *gorm.DB) Stor
 	}
 }
 
+// WithModelConverter 配置模型转换器
+func WithModelConverter[K comparable, V any](toModel func(*V) any, fromModel func(any) *V) StoreOption[K, V] {
+	return func(s *GormStore[K, V]) {
+		s.modelToEntity = toModel
+		s.entityToModel = fromModel
+	}
+}
+
 // NewGormStore 创建一个新的 GORM 存储
 func NewGormStore[K comparable, V any](db *gorm.DB, opts ...StoreOption[K, V]) (*GormStore[K, V], error) {
 	store := &GormStore[K, V]{
@@ -145,7 +155,8 @@ func NewGormStore[K comparable, V any](db *gorm.DB, opts ...StoreOption[K, V]) (
 	}
 
 	// 自动迁移表结构
-	if err := db.AutoMigrate(new(V)); err != nil {
+	model := store.convertToModel(new(V))
+	if err := db.AutoMigrate(&model); err != nil {
 		return nil, err
 	}
 
@@ -155,6 +166,22 @@ func NewGormStore[K comparable, V any](db *gorm.DB, opts ...StoreOption[K, V]) (
 // DB 返回底层的 GORM DB 实例
 func (s *GormStore[K, V]) DB() *gorm.DB {
 	return s.db
+}
+
+// convertToModel 将实体转换为模型
+func (s *GormStore[K, V]) convertToModel(v *V) any {
+	if s.modelToEntity == nil {
+		return v
+	}
+	return s.modelToEntity(v)
+}
+
+// convertToEntity 将模型转换为实体
+func (s *GormStore[K, V]) convertToEntity(m any) *V {
+	if s.entityToModel == nil {
+		return m.(*V)
+	}
+	return s.entityToModel(m)
 }
 
 // Set 存储值
@@ -172,10 +199,12 @@ func (s *GormStore[K, V]) Set(ctx context.Context, key K, value V) error {
 		query = scope(query, key, value)
 	}
 
-	err := query.Save(&value).Error
+	model := s.convertToModel(&value)
+	err := query.Save(model).Error
 	if err != nil {
 		return err
 	}
+	value = *s.convertToEntity(model)
 
 	// 执行后置钩子
 	for _, hook := range s.afterSet {
@@ -203,7 +232,9 @@ func (s *GormStore[K, V]) GetWithOpts(ctx context.Context, key K, opts ...QueryO
 		}
 	}
 
-	query := s.db.WithContext(ctx)
+	model := s.convertToModel(new(V))
+	query := s.db.WithContext(ctx).Model(model)
+
 	// 应用 get scopes
 	for _, scope := range s.getScopes {
 		query = scope(query, key)
@@ -213,13 +244,15 @@ func (s *GormStore[K, V]) GetWithOpts(ctx context.Context, key K, opts ...QueryO
 		query = opt(query)
 	}
 
-	err := query.First(&value, s.keyConv.ToDBKey(key)).Error
+	err := query.First(model, s.keyConv.ToDBKey(key)).Error
 	if err == gorm.ErrRecordNotFound {
 		return value, store.ErrNotFound
 	}
 	if err != nil {
 		return value, err
 	}
+
+	value = *s.convertToEntity(model)
 
 	// 执行后置钩子
 	for _, hook := range s.afterGet {
@@ -246,7 +279,8 @@ func (s *GormStore[K, V]) Delete(ctx context.Context, key K) error {
 		query = scope(query, key)
 	}
 
-	result := query.Delete(new(V), s.keyConv.ToDBKey(key))
+	model := s.convertToModel(new(V))
+	result := query.Delete(model, s.keyConv.ToDBKey(key))
 	if result.Error != nil {
 		return result.Error
 	}
@@ -272,7 +306,8 @@ func (s *GormStore[K, V]) Has(ctx context.Context, key K) bool {
 // HasWithOpts 带查询选项的 Has 方法
 func (s *GormStore[K, V]) HasWithOpts(ctx context.Context, key K, opts ...QueryOption) bool {
 	var count int64
-	query := s.db.WithContext(ctx).Model(new(V))
+	model := s.convertToModel(new(V))
+	query := s.db.WithContext(ctx).Model(model)
 
 	// 应用查询选项
 	for _, opt := range opts {
@@ -413,14 +448,22 @@ func (s *GormStore[K, V]) GetSet(ctx context.Context, key K, value V) (oldValue 
 	}
 
 	// 获取旧值，使用悲观锁
+	oldModel := s.convertToModel(new(V))
+
+	// 应用 get scopes
+	for _, scope := range s.getScopes {
+		tx = scope(tx, key)
+	}
+
 	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		First(&oldValue, s.keyConv.ToDBKey(key)).Error
+		First(oldModel, s.keyConv.ToDBKey(key)).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return oldValue, err
 	}
 
-	// 执行 Get 后置钩子
 	if err != gorm.ErrRecordNotFound {
+		oldValue = *s.convertToEntity(oldModel)
+		// 执行 Get 后置钩子
 		for _, hook := range s.afterGet {
 			if err = hook(ctx, key, oldValue); err != nil {
 				return
@@ -436,7 +479,13 @@ func (s *GormStore[K, V]) GetSet(ctx context.Context, key K, value V) (oldValue 
 	}
 
 	// 保存新值
-	if err = tx.Save(&value).Error; err != nil {
+	model := s.convertToModel(&value)
+	// 应用 set scopes
+	for _, scope := range s.setScopes {
+		tx = scope(tx, key, value)
+	}
+
+	if err = tx.Save(model).Error; err != nil {
 		return
 	}
 

@@ -29,12 +29,65 @@ type Profile struct {
 	Bio    string `gorm:"type:text"`
 }
 
+// 测试实体和模型
+type UserEntity struct {
+	ID      uint
+	Name    string
+	Age     int
+	Profile UserProfile
+}
+
+type UserProfile struct {
+	ID     uint
+	UserID uint
+	Bio    string
+}
+
+type UserModel struct {
+	ID      uint   `gorm:"primarykey"`
+	Name    string `gorm:"type:varchar(100);uniqueIndex"`
+	Age     int
+	Profile ProfileModel `gorm:"foreignKey:UserID"`
+}
+
+type ProfileModel struct {
+	ID     uint   `gorm:"primarykey"`
+	UserID uint   `gorm:"index"`
+	Bio    string `gorm:"type:text"`
+}
+
+func (m *UserModel) ToEntity() *UserEntity {
+	return &UserEntity{
+		ID:   m.ID,
+		Name: m.Name,
+		Age:  m.Age,
+		Profile: UserProfile{
+			ID:     m.Profile.ID,
+			UserID: m.Profile.UserID,
+			Bio:    m.Profile.Bio,
+		},
+	}
+}
+
+func (e UserEntity) ToModel() *UserModel {
+	return &UserModel{
+		ID:   e.ID,
+		Name: e.Name,
+		Age:  e.Age,
+		Profile: ProfileModel{
+			ID:     e.Profile.ID,
+			UserID: e.Profile.UserID,
+			Bio:    e.Profile.Bio,
+		},
+	}
+}
+
 func setupTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 
 	// 自动迁移表结构
-	err = db.AutoMigrate(&User{}, &Profile{})
+	err = db.AutoMigrate(&User{}, &Profile{}, &UserModel{}, &ProfileModel{})
 	require.NoError(t, err)
 
 	return db
@@ -439,5 +492,156 @@ func TestGormStoreFieldKeyConverter(t *testing.T) {
 		err = store.Set(ctx, user2.Name, user2)
 		assert.Error(t, err, "应该返回唯一约束错误")
 		assert.Contains(t, err.Error(), "UNIQUE constraint failed")
+	})
+}
+
+func TestGormStoreModelConversion(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// 自动迁移表结构
+	err := db.AutoMigrate(&UserModel{}, &ProfileModel{})
+	require.NoError(t, err)
+
+	store, err := NewGormStore[uint, UserEntity](db,
+		WithModelConverter[uint, UserEntity](
+			func(e *UserEntity) any { return e.ToModel() },
+			func(m any) *UserEntity {
+				entity := m.(*UserModel).ToEntity()
+				return entity
+			},
+		),
+		WithGetScope[uint, UserEntity](func(db *gorm.DB, key uint) *gorm.DB {
+			return db.Preload("Profile")
+		}),
+		WithSetScope[uint, UserEntity](func(db *gorm.DB, key uint, value UserEntity) *gorm.DB {
+			return db.Preload("Profile")
+		}),
+	)
+	require.NoError(t, err)
+
+	t.Run("Basic CRUD with Model Conversion", func(t *testing.T) {
+		// Set
+		entity := UserEntity{
+			Name: "Alice",
+			Age:  25,
+			Profile: UserProfile{
+				Bio: "Test Bio",
+			},
+		}
+		err := store.Set(ctx, 0, entity)
+		require.NoError(t, err)
+
+		// Get
+		retrieved, err := store.Get(ctx, 1)
+		require.NoError(t, err)
+		assert.Equal(t, "Alice", retrieved.Name)
+		assert.Equal(t, 25, retrieved.Age)
+		// assert.Equal(t, "Test Bio", retrieved.Profile.Bio)
+
+		// Has
+		exists := store.Has(ctx, 1)
+		assert.True(t, exists)
+
+		// Delete
+		err = store.Delete(ctx, 1)
+		require.NoError(t, err)
+
+		// Get after delete
+		_, err = store.Get(ctx, 1)
+		assert.ErrorIs(t, err, gstore.ErrNotFound)
+	})
+
+	t.Run("Query Options with Model Conversion", func(t *testing.T) {
+		// 创建测试数据
+		entity := UserEntity{
+			Name: "Bob",
+			Age:  30,
+			Profile: UserProfile{
+				Bio: "Test Bio",
+			},
+		}
+		err := store.Set(ctx, 0, entity)
+		require.NoError(t, err)
+
+		// 测试预加载
+		retrieved, err := store.GetWithOpts(ctx, 2,
+			WithPreload("Profile"),
+		)
+		require.NoError(t, err)
+		assert.Equal(t, "Bob", retrieved.Name)
+		assert.Equal(t, "Test Bio", retrieved.Profile.Bio)
+
+		// 测试条件查询
+		exists := store.HasWithOpts(ctx, 2,
+			WithWhere("age = ?", 30),
+		)
+		assert.True(t, exists)
+
+		exists = store.HasWithOpts(ctx, 2,
+			WithWhere("age = ?", 31),
+		)
+		assert.False(t, exists)
+	})
+
+	t.Run("GetSet with Model Conversion", func(t *testing.T) {
+		// 创建初始数据
+		entity := UserEntity{
+			Name: "Charlie",
+			Age:  35,
+			Profile: UserProfile{
+				Bio: "Initial Bio",
+			},
+		}
+		err := store.Set(ctx, 0, entity)
+		require.NoError(t, err)
+
+		// 更新数据
+		newEntity := UserEntity{
+			Name: "Charlie Updated",
+			Age:  36,
+			Profile: UserProfile{
+				Bio: "Updated Bio",
+			},
+		}
+
+		// 获取旧值并设置新值
+		oldValue, err := store.GetSet(ctx, 3, newEntity)
+		require.NoError(t, err)
+		assert.Equal(t, "Charlie", oldValue.Name)
+		assert.Equal(t, 35, oldValue.Age)
+		assert.Equal(t, "Initial Bio", oldValue.Profile.Bio)
+	})
+
+	t.Run("No Conversion", func(t *testing.T) {
+		// 创建一个不使用转换器的存储
+		noConvStore, err := NewGormStore[uint, *UserModel](db)
+		require.NoError(t, err)
+
+		// 直接使用模型，设置明确的 ID
+		model := &UserModel{
+			ID:   5, // 设置明确的用户 ID
+			Name: "Direct Model",
+			Age:  40,
+			Profile: ProfileModel{
+				ID:     6, // 设置明确的 Profile ID
+				UserID: 5, // 关联到用户 ID
+				Bio:    "Direct Model Bio",
+			},
+		}
+
+		// Set
+		err = noConvStore.Set(ctx, 5, model) // 使用明确的 key
+		require.NoError(t, err)
+
+		// Get
+		retrieved, err := noConvStore.Get(ctx, 5) // 使用相同的 key
+		require.NoError(t, err)
+		assert.Equal(t, "Direct Model", retrieved.Name)
+		assert.Equal(t, 40, retrieved.Age)
+		assert.Equal(t, "Direct Model Bio", retrieved.Profile.Bio)
+		assert.Equal(t, uint(5), retrieved.ID)
+		assert.Equal(t, uint(6), retrieved.Profile.ID)
+		assert.Equal(t, uint(5), retrieved.Profile.UserID)
 	})
 }
