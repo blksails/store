@@ -2,6 +2,8 @@ package gorm
 
 import (
 	"context"
+	"reflect"
+	"unsafe"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -48,8 +50,8 @@ func (c CompositeKeyConverter[K]) ToDBKey(key K) interface{} {
 type GormStore[K comparable, V any] struct {
 	db            *gorm.DB
 	keyConv       KeyConverter[K]
-	modelToEntity func(entity *V) any // 将实体转换为模型
-	entityToModel func(model any) *V  // 将模型转换为实体
+	entityToModel func(entity V) any // 将实体转换为模型
+	modelToEntity func(model any) V  // 将模型转换为实体
 	beforeGet     []func(ctx context.Context, key K) error
 	afterGet      []func(ctx context.Context, key K, value V) error
 	beforeSet     []func(ctx context.Context, key K, value V) error
@@ -59,6 +61,9 @@ type GormStore[K comparable, V any] struct {
 	getScopes     []func(*gorm.DB, K) *gorm.DB
 	setScopes     []func(*gorm.DB, K, V) *gorm.DB
 	deleteScopes  []func(*gorm.DB, K) *gorm.DB
+	isptr         bool         // 是否是指针类型
+	autoMigrate   bool         // 是否自动迁移表结构
+	vType         reflect.Type // 值类型
 }
 
 // StoreOption 配置 GormStore 的选项
@@ -135,18 +140,51 @@ func WithDeleteScope[K comparable, V any](scope func(*gorm.DB, K) *gorm.DB) Stor
 }
 
 // WithModelConverter 配置模型转换器
-func WithModelConverter[K comparable, V any](toModel func(*V) any, fromModel func(any) *V) StoreOption[K, V] {
+func WithModelConverter[K comparable, V any](toModel func(V) any, fromModel func(any) V) StoreOption[K, V] {
+	// 验证 toModel 和 fromModel 的参数类型
+	if toModel == nil {
+		panic("toModel is nil")
+	}
+
+	if fromModel == nil {
+		panic("fromModel is nil")
+	}
+
+	m := toModel(newValue[V]())
+	if reflect.TypeOf(m).Kind() != reflect.Ptr {
+		panic("toModel must return a pointer")
+	}
+
+	fromModel(m)
+
 	return func(s *GormStore[K, V]) {
-		s.modelToEntity = toModel
-		s.entityToModel = fromModel
+		s.entityToModel = toModel
+		s.modelToEntity = fromModel
+	}
+}
+
+func newValue[V any]() V {
+	if isPtr[V]() {
+		return reflect.New(getVType[V]()).Interface().(V)
+	} else {
+		return reflect.New(getVType[V]()).Elem().Interface().(V)
+	}
+}
+
+func WithAutoMigrate[K comparable, V any]() StoreOption[K, V] {
+	return func(s *GormStore[K, V]) {
+		s.autoMigrate = true
 	}
 }
 
 // NewGormStore 创建一个新的 GORM 存储
 func NewGormStore[K comparable, V any](db *gorm.DB, opts ...StoreOption[K, V]) (*GormStore[K, V], error) {
 	store := &GormStore[K, V]{
-		db:      db,
-		keyConv: DefaultKeyConverter[K]{}, // 默认使用直接转换
+		db:          db,
+		keyConv:     DefaultKeyConverter[K]{}, // 默认使用直接转换
+		isptr:       isPtr[V](),
+		autoMigrate: false,
+		vType:       getVType[V](),
 	}
 
 	// 应用选项
@@ -155,12 +193,43 @@ func NewGormStore[K comparable, V any](db *gorm.DB, opts ...StoreOption[K, V]) (
 	}
 
 	// 自动迁移表结构
-	model := store.convertToModel(new(V))
-	if err := db.AutoMigrate(&model); err != nil {
-		return nil, err
+	if store.autoMigrate {
+		var zero = store.newValue()
+		model := store.convertToModel(zero)
+		if err := db.AutoMigrate(model); err != nil {
+			return nil, err
+		}
 	}
 
 	return store, nil
+}
+
+// newValue 创建一个新值
+func (s *GormStore[K, V]) newValueAt(p unsafe.Pointer) {
+	reflect.NewAt(s.vType, p)
+}
+
+func (s *GormStore[K, V]) newValue() V {
+	if s.isptr {
+		return reflect.New(s.vType).Interface().(V)
+	} else {
+		return reflect.New(s.vType).Elem().Interface().(V)
+	}
+}
+
+// 判断是否是指针类型
+func isPtr[V any]() bool {
+	var zero V
+	return reflect.TypeOf(zero).Kind() == reflect.Ptr
+}
+
+func getVType[V any]() reflect.Type {
+	var zero V
+	if isPtr[V]() {
+		return reflect.TypeOf(zero).Elem()
+	} else {
+		return reflect.TypeOf(zero)
+	}
 }
 
 // DB 返回底层的 GORM DB 实例
@@ -169,19 +238,29 @@ func (s *GormStore[K, V]) DB() *gorm.DB {
 }
 
 // convertToModel 将实体转换为模型
-func (s *GormStore[K, V]) convertToModel(v *V) any {
-	if s.modelToEntity == nil {
-		return v
+func (s *GormStore[K, V]) convertToModel(v V) any {
+	if s.entityToModel == nil {
+		if s.isptr {
+			return v
+		} else {
+			return &v
+		}
 	}
-	return s.modelToEntity(v)
+
+	return s.entityToModel(v)
 }
 
 // convertToEntity 将模型转换为实体
-func (s *GormStore[K, V]) convertToEntity(m any) *V {
-	if s.entityToModel == nil {
-		return m.(*V)
+func (s *GormStore[K, V]) convertToEntity(m any) V {
+	if s.modelToEntity == nil {
+		if s.isptr {
+			return m.(V)
+		} else {
+			return *m.(*V)
+		}
 	}
-	return s.entityToModel(m)
+
+	return s.modelToEntity(m)
 }
 
 // Set 存储值
@@ -199,12 +278,12 @@ func (s *GormStore[K, V]) Set(ctx context.Context, key K, value V) error {
 		query = scope(query, key, value)
 	}
 
-	model := s.convertToModel(&value)
+	model := s.convertToModel(value)
 	err := query.Save(model).Error
 	if err != nil {
 		return err
 	}
-	value = *s.convertToEntity(model)
+	value = s.convertToEntity(model)
 
 	// 执行后置钩子
 	for _, hook := range s.afterSet {
@@ -232,7 +311,8 @@ func (s *GormStore[K, V]) GetWithOpts(ctx context.Context, key K, opts ...QueryO
 		}
 	}
 
-	model := s.convertToModel(new(V))
+	zero := s.newValue()
+	model := s.convertToModel(zero)
 	query := s.db.WithContext(ctx).Model(model)
 
 	// 应用 get scopes
@@ -252,7 +332,7 @@ func (s *GormStore[K, V]) GetWithOpts(ctx context.Context, key K, opts ...QueryO
 		return value, err
 	}
 
-	value = *s.convertToEntity(model)
+	value = s.convertToEntity(model)
 
 	// 执行后置钩子
 	for _, hook := range s.afterGet {
@@ -279,7 +359,8 @@ func (s *GormStore[K, V]) Delete(ctx context.Context, key K) error {
 		query = scope(query, key)
 	}
 
-	model := s.convertToModel(new(V))
+	var zero V
+	model := s.convertToModel(zero)
 	result := query.Delete(model, s.keyConv.ToDBKey(key))
 	if result.Error != nil {
 		return result.Error
@@ -306,7 +387,8 @@ func (s *GormStore[K, V]) Has(ctx context.Context, key K) bool {
 // HasWithOpts 带查询选项的 Has 方法
 func (s *GormStore[K, V]) HasWithOpts(ctx context.Context, key K, opts ...QueryOption) bool {
 	var count int64
-	model := s.convertToModel(new(V))
+	var zero V
+	model := s.convertToModel(zero)
 	query := s.db.WithContext(ctx).Model(model)
 
 	// 应用查询选项
@@ -448,7 +530,8 @@ func (s *GormStore[K, V]) GetSet(ctx context.Context, key K, value V) (oldValue 
 	}
 
 	// 获取旧值，使用悲观锁
-	oldModel := s.convertToModel(new(V))
+	var zero V
+	oldModel := s.convertToModel(zero)
 
 	// 应用 get scopes
 	for _, scope := range s.getScopes {
@@ -462,7 +545,7 @@ func (s *GormStore[K, V]) GetSet(ctx context.Context, key K, value V) (oldValue 
 	}
 
 	if err != gorm.ErrRecordNotFound {
-		oldValue = *s.convertToEntity(oldModel)
+		oldValue = s.convertToEntity(oldModel)
 		// 执行 Get 后置钩子
 		for _, hook := range s.afterGet {
 			if err = hook(ctx, key, oldValue); err != nil {
@@ -479,7 +562,7 @@ func (s *GormStore[K, V]) GetSet(ctx context.Context, key K, value V) (oldValue 
 	}
 
 	// 保存新值
-	model := s.convertToModel(&value)
+	model := s.convertToModel(value)
 	// 应用 set scopes
 	for _, scope := range s.setScopes {
 		tx = scope(tx, key, value)

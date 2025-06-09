@@ -56,8 +56,8 @@ type ProfileModel struct {
 	Bio    string `gorm:"type:text"`
 }
 
-func (m *UserModel) ToEntity() *UserEntity {
-	return &UserEntity{
+func (m *UserModel) ToEntity() UserEntity {
+	return UserEntity{
 		ID:   m.ID,
 		Name: m.Name,
 		Age:  m.Age,
@@ -505,18 +505,19 @@ func TestGormStoreModelConversion(t *testing.T) {
 
 	store, err := NewGormStore[uint, UserEntity](db,
 		WithModelConverter[uint, UserEntity](
-			func(e *UserEntity) any { return e.ToModel() },
-			func(m any) *UserEntity {
-				entity := m.(*UserModel).ToEntity()
-				return entity
+			func(e UserEntity) any { return e.ToModel() },
+			func(m any) UserEntity {
+				entity := m.(*UserModel)
+				return entity.ToEntity()
 			},
 		),
 		WithGetScope[uint, UserEntity](func(db *gorm.DB, key uint) *gorm.DB {
 			return db.Preload("Profile")
 		}),
-		WithSetScope[uint, UserEntity](func(db *gorm.DB, key uint, value UserEntity) *gorm.DB {
-			return db.Preload("Profile")
-		}),
+		// WithSetScope[uint, UserEntity](func(db *gorm.DB, key uint, value UserEntity) *gorm.DB {
+		// 	return db.Preload("Profile")
+		// }),
+		WithAutoMigrate[uint, UserEntity](),
 	)
 	require.NoError(t, err)
 
@@ -615,7 +616,11 @@ func TestGormStoreModelConversion(t *testing.T) {
 
 	t.Run("No Conversion", func(t *testing.T) {
 		// 创建一个不使用转换器的存储
-		noConvStore, err := NewGormStore[uint, *UserModel](db)
+		noConvStore, err := NewGormStore[uint, *UserModel](db,
+			WithGetScope[uint, *UserModel](func(db *gorm.DB, key uint) *gorm.DB {
+				return db.Preload("Profile")
+			}),
+		)
 		require.NoError(t, err)
 
 		// 直接使用模型，设置明确的 ID
